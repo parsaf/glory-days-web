@@ -62,10 +62,10 @@ flowchart LR
 
 ### Class 2: Prop Fighter Plane (*"P-47 Thunderbolt"*)
 * **Flight Model:** Highly maneuverable WWII/Cold-War heavy prop fighter replacing the supersonic jet. Takes off and lands along the Base Runway.
-  * **Throttle & Pitch Separation:** **`Left` / `Right` Arrows** control forward thrust/velocity (and trigger wide U-turns when reversed); **`Up` / `Down` Arrows** only change nose pitch and vertical direction without accelerating or braking the plane's scalar airspeed. Releasing `Left`/`Right` causes air drag deceleration (`135 u/s²`), and dropping below stall speed (`195 u/s`) causes lift to drop off so gravity pulls the plane into a stall fall.
+  * **Throttle & Pitch Separation + Stall Glide-to-Nose-Dive:** **`Left` / `Right` Arrows** control forward thrust/velocity (and trigger wide U-turns when reversed); **`Up` / `Down` Arrows** only change nose pitch and vertical direction without accelerating or braking the plane's scalar airspeed. Releasing `Left`/`Right` causes air drag deceleration (`135 u/s²`); dropping below the lift threshold (`stallSpeed = 220 u/s`) transitions the plane from a shallow glide into a forward-angled nose-dive (up to `-0.62 rad` / `~-35°`, keeping forward dive momentum alive rather than dropping straight down vertically). Pulling `Up` while stalled cannot climb until thrust restores speed above `220 u/s`.
   * **Gentle Sine-Wave Vertical Cruise:** The P-47 cannot fly in a dead-flat horizontal line; while traversing the map horizontally, aerodynamic trim imparts a subtle, shallow-amplitude, long-wavelength vertical sine-wave oscillation ($y_{\text{osc}}(t) = A \sin(\omega t)$ with wide distance between peaks) paired with a gentle matching nose-pitch tangent oscillation ($\Delta \theta(t)$) so the plane smoothly rises and dips across long stretches.
   * **Wide U-Turn Momentum:** Reversing horizontal direction executes a wide banking U-turn (`0.8s` duration) where horizontal velocity follows $v_x(p) = v_{\text{cruise}} \cdot \cos(\pi p)$ for $p \in [0, 1]$, carrying forward travel into the bank (`p = 0 → 0.5`), pivoting through the 90° wing-over apex (`p = 0.5`), and accelerating smoothly into the opposite direction (`p = 0.5 → 1.0`).
-* **Stats:** `300 HP` | Cruise/Max Speed: `420 / 540 u/s` | Stall Speed: `195 u/s` | Cabin Capacity: **0**.
+* **Stats:** `300 HP` | Cruise/Max Speed: `420 / 540 u/s` | Lift Stall Threshold: `220 u/s` (min glide `175 u/s`) | Cabin Capacity: **0**.
 * **Weapons & Loadout:**
   * **Primary (`A`):** Twin Wing-Mounted .50 Cal / 20mm Autocannons firing straight along the plane's nose vector. Uses the **Burst-Fire Reservoir** mechanic. High DPS for dogfighting and strafing.
   * **Secondary (`S`):** **8x Unified Straight-Trajectory Fuel-Limited Missiles/Rockets** (finite capacity):
@@ -127,7 +127,9 @@ Pressing **`Q`** toggles the **Requisition / Purchase Menu** overlay above the T
   2. Restocks finite secondary rockets/bombs and flares (`1 unit per 0.5s`).
   3. Unloads any rescued civilians in the Helicopter cabin for immediate cash.
 * **No Automatic Modal:** Landing **never** hijacks the screen with an automatic swap/load popup. Players remain in control and press **`E`** to load/unload troops or **`Q` -> `0`** to switch aircraft whenever desired.
-* **Proportional Ground & Hard-Landing Damage:** Touching ground outside the friendly airstrip deals immediate impact damage + continuous ground-scrape damage proportional to vertical speed and total plane momentum. Touching down too hard (`|vy| > 45 u/s` or steep pitch) on the friendly airstrip also deals damage proportional to impact severity and momentum, crashing the aircraft if HP reaches `0` (`3s`–`5s` respawn delay + `$100` team replacement cost).
+* **Proportional Ground Damage, Bounce & Crash-Landing Slide:** Touching ground outside the friendly airstrip or landing too hard (`|vy| > 45 u/s` or `|pitch| > 0.26 rad`) on the friendly airstrip inflicts damage proportional to impact vertical speed and total plane momentum:
+  * **Survivable Impact (`HP > 0`):** The plane bounces back up into the air (`48–125 u/s` upward velocity, nose pitched slightly up) with reduced forward speed so the pilot can recover.
+  * **Fatal Impact (`HP <= 0`):** Enters a fiery **crash-landing ground slide** (`~1.1s`), skidding forward along `y = 0` and **destroying any ground vehicles or troops in its path** before detonating (`3s`–`5s` respawn delay + `$100` team replacement cost).
 
 ---
 

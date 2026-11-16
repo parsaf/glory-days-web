@@ -128,6 +128,7 @@ export class SpriteBattlefieldRenderer {
     ctx.translate(sx, anchorBottom ? sy - h * 0.5 : sy);
     if (flipX) ctx.scale(-1, 1);
     if (angle) ctx.rotate(angle);
+    if (opts.crashing) ctx.filter = "brightness(0.55) saturate(0.65)";
     ctx.drawImage(src, -width * 0.5, -h * 0.5, width, h);
     ctx.restore();
   }
@@ -289,13 +290,23 @@ export class SpriteBattlefieldRenderer {
     // 7. Player Aircraft
     for (const player of Object.values(state.players)) {
       if (!player.alive) continue;
+      if (player.crashing) {
+        this.smokeTrail.push({
+          x: player.x - player.dir * 16,
+          y: 12 + Math.random() * 8,
+          r: 8 + Math.random() * 6,
+          life: 0.45,
+          maxLife: 0.45,
+          color: Math.random() > 0.35 ? "#334155" : "#f97316"
+        });
+      }
       const frame = this.getAircraftFrame(player);
       this.drawSprite(
         frame.key,
         player.x,
         player.y,
         frame.height,
-        { team: player.team, flipX: frame.flipX, angle: frame.angle },
+        { team: player.team, flipX: frame.flipX, angle: frame.angle, crashing: player.crashing },
         w,
         groundScreenY
       );

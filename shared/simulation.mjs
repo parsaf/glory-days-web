@@ -88,6 +88,8 @@ export function createPlayer(id, team = "allied", aircraftType = "heli") {
     cabinCapacity: cfg.cabinCapacity,
     landedAtBase: true,
     alive: true,
+    crashing: false,
+    crashSlideTicks: 0,
     respawnTicks: 0,
 
     // Primary Burst-Fire Reservoir state (60 Hz ticks)
@@ -125,7 +127,7 @@ export function isOnFriendlyPad(player) {
 
 export function swapPlayerAircraft(state, playerId, nextType = null) {
   const player = state.players[playerId];
-  if (!player || !player.alive || !player.landedAtBase) return false;
+  if (!player || !player.alive || player.crashing || !player.landedAtBase) return false;
 
   const targetType = nextType || (player.aircraftType === "heli" ? "p47" : "heli");
   if (!AIRCRAFT_CONFIG[targetType] || targetType === player.aircraftType) return false;
@@ -145,6 +147,8 @@ export function swapPlayerAircraft(state, playerId, nextType = null) {
   player.speed = 0;
   player.stallVy = 0;
   player.pitch = 0;
+  player.crashing = false;
+  player.crashSlideTicks = 0;
   player.turnTimer = 0;
   player.turnDuration = cfg.turnDuration;
   player.dir = player.team === "allied" ? 1 : -1;
@@ -301,7 +305,14 @@ function updateP47(state, player, input, dt) {
     // Off-base ground rolling deals scrape damage proportional to momentum
     if (!isOnFriendlyPad(player) && player.speed > 12) {
       player.hp = Math.max(0, player.hp - (22 + player.speed * 0.28) * dt);
-      if (player.hp <= 0) return "crash";
+      if (player.hp <= 0) {
+        player.crashing = true;
+        player.crashSlideTicks = cfg.crashSlideTicks;
+        player.speed = Math.max(190, player.speed);
+        player.pitch = -0.16;
+        state.events.push({ type: "crash_slide_start", playerId: player.id, x: player.x, tick: state.tick });
+        return "ok";
+      }
     }
 
     player.vx = player.dir * player.speed;
@@ -341,46 +352,53 @@ function updateP47(state, player, input, dt) {
     return "ok";
   }
 
-  // Left/Right controls horizontal thrust & U-turn; no Left/Right decelerates via drag
+  // Left/Right controls horizontal thrust & U-turn; no Left/Right decelerates toward minGlideSpeed via drag
   if (hInput === player.dir) {
     player.speed = Math.min(cfg.maxSpeed, player.speed + cfg.accelRate * dt);
   } else if (hInput === -player.dir) {
-    if (player.speed >= cfg.stallSpeed * 0.75) {
+    if (player.speed >= cfg.stallSpeed * 0.8) {
       player.turnTimer = dt;
       player.turnStartDir = player.dir;
       player.turnStartSpeed = player.speed;
       return "ok";
     }
-    // Too slow for a high-speed bank -> keep decelerating or flip when near zero
-    player.speed = Math.max(0, player.speed - cfg.dragDecelRate * 1.5 * dt);
-    if (player.speed < 20) player.dir = hInput;
-  } else {
-    player.speed = Math.max(0, player.speed - cfg.dragDecelRate * dt);
+    player.speed = Math.max(cfg.minGlideSpeed, player.speed - cfg.dragDecelRate * 1.4 * dt);
+  } else if (player.speed > cfg.minGlideSpeed) {
+    player.speed = Math.max(cfg.minGlideSpeed, player.speed - cfg.dragDecelRate * dt);
   }
+
+  // Lift factor: 1.0 at >= stallSpeed (220), dropping smoothly to 0.0 at minGlideSpeed (175)
+  const lift = clamp((player.speed - cfg.minGlideSpeed) / (cfg.stallSpeed - cfg.minGlideSpeed), 0, 1);
 
   // Up/Down ONLY changes pitch & vertical direction without changing scalar airspeed
   if (vInput !== 0) {
     player.pitch = clamp(player.pitch + vInput * cfg.pitchRate * dt, -cfg.maxPitch, cfg.maxPitch);
-  } else {
+  } else if (lift >= 1) {
     player.pitch *= Math.pow(0.10, dt);
   }
 
-  // Aerodynamic lift vs stall gravity sink when speed drops below stallSpeed
-  const lift = clamp(player.speed / cfg.stallSpeed, 0, 1);
+  // Below lift threshold: transition from shallow glide into a forward angled nose-dive (not a vertical fall!)
   if (lift < 1) {
-    player.stallVy = Math.max(-420, (player.stallVy || 0) - GRAVITY * (1 - lift * lift) * dt);
-    player.pitch = Math.max(-cfg.maxPitch, player.pitch - 0.5 * (1 - lift) * dt);
-  } else {
-    player.stallVy = (player.stallVy || 0) * Math.pow(0.02, dt);
+    const targetDivePitch = -0.18 + (cfg.maxDivePitch - (-0.18)) * (1 - lift);
+    player.pitch += (targetDivePitch - player.pitch) * Math.min(1, dt * 2.8);
+    if (vInput > 0) {
+      // Without thrust above stallSpeed, pulling Up cannot climb; caps at shallow glide
+      player.pitch = Math.min(player.pitch, -0.12);
+    }
+    // Gravity along dive angle keeps forward dive momentum alive rather than dropping out of the sky
+    if (hInput === 0) {
+      player.speed = Math.min(cfg.stallSpeed - 6, Math.max(cfg.minGlideSpeed, player.speed + Math.max(0, -Math.sin(player.pitch)) * 55 * dt));
+    }
   }
+  player.stallVy = 0;
 
-  // Shallow, long-wavelength vertical sine-wave cruise oscillation (scaled by lift)
+  // Shallow, long-wavelength vertical sine-wave cruise oscillation (active only with wing lift)
   const waveVelY = Math.cos(player.airborneTime * cfg.sineOmega) * cfg.sineAmpVel * lift;
   const wavePitch = Math.cos(player.airborneTime * cfg.sineOmega) * cfg.sinePitchAmp * lift;
-  const effectivePitch = clamp(player.pitch + (vInput === 0 ? wavePitch : 0), -cfg.maxPitch, cfg.maxPitch);
+  const effectivePitch = clamp(player.pitch + (vInput === 0 ? wavePitch : 0), cfg.maxDivePitch, cfg.maxPitch);
 
   player.vx = player.dir * player.speed * Math.cos(effectivePitch);
-  player.vy = player.speed * Math.sin(effectivePitch) + player.stallVy + (vInput === 0 ? waveVelY : 0);
+  player.vy = player.speed * Math.sin(effectivePitch) + (vInput === 0 ? waveVelY : 0);
 
   player.x += player.vx * dt;
   player.y += player.vy * dt;
@@ -404,31 +422,45 @@ function updateP47(state, player, input, dt) {
     const momentumSpeed = Math.hypot(impactVx, impactVy);
     const onStrip = isOnFriendlyPad(player);
 
-    if (onStrip) {
-      if (impactVy > cfg.safeLandingVy || Math.abs(player.pitch) > cfg.safeLandingPitch) {
-        const excessVy = Math.max(0, impactVy - cfg.safeLandingVy);
-        const excessPitch = Math.max(0, Math.abs(player.pitch) - cfg.safeLandingPitch);
-        const dmg = (excessVy * 0.75 + excessPitch * 90) * (0.6 + momentumSpeed / 320);
-        player.hp = Math.max(0, player.hp - dmg);
-        state.events.push({ type: "hard_landing", playerId: player.id, x: player.x, damage: dmg, onStrip: true, tick: state.tick });
-        if (player.hp <= 0) return "crash";
-      }
+    const safeAirstripLanding = onStrip && impactVy <= cfg.safeLandingVy && Math.abs(player.pitch) <= cfg.safeLandingPitch;
+    if (safeAirstripLanding) {
       player.y = 0;
       player.vy = 0;
       player.stallVy = 0;
       player.pitch = 0;
       player.speed = impactVx;
     } else {
-      // Touching ground outside friendly airstrip deals proportional impact & momentum damage
-      const dmg = (24 + impactVy * 0.95) * (0.55 + momentumSpeed / 280);
+      const dmg = onStrip
+        ? (Math.max(0, impactVy - cfg.safeLandingVy) * 0.75 + Math.max(0, Math.abs(player.pitch) - cfg.safeLandingPitch) * 110) * (0.6 + momentumSpeed / 320)
+        : (28 + impactVy * 0.85 + Math.max(0, -player.pitch) * 70) * (0.55 + momentumSpeed / 300);
+
       player.hp = Math.max(0, player.hp - dmg);
-      state.events.push({ type: "hard_landing", playerId: player.id, x: player.x, damage: dmg, onStrip: false, tick: state.tick });
-      if (player.hp <= 0) return "crash";
+
+      if (player.hp > 0) {
+        // Survives impact -> bounces back up a little into the air!
+        player.y = 2;
+        player.speed = Math.max(cfg.minGlideSpeed, impactVx * 0.78);
+        const bounceVy = clamp(impactVy * 0.55 + 38, 48, 125);
+        player.pitch = clamp(Math.atan2(bounceVy, player.speed), 0.12, 0.30);
+        player.vx = player.dir * player.speed * Math.cos(player.pitch);
+        player.vy = bounceVy;
+        player.stallVy = 0;
+        player.effectivePitch = player.pitch;
+        state.events.push({ type: "hard_landing", playerId: player.id, x: player.x, damage: dmg, bounced: true, onStrip, tick: state.tick });
+        return "ok";
+      }
+
+      // Fatal impact -> crash-landing slide along the ground destroying vehicles & troops in path!
       player.y = 0;
       player.vy = 0;
       player.stallVy = 0;
-      player.pitch = 0;
-      player.speed = impactVx * 0.7;
+      player.crashing = true;
+      player.crashSlideTicks = cfg.crashSlideTicks;
+      player.speed = Math.max(210, impactVx * 0.85);
+      player.vx = player.dir * player.speed;
+      player.pitch = -0.16;
+      state.events.push({ type: "crash_slide_start", playerId: player.id, x: player.x, tick: state.tick });
+      return "ok";
     }
   } else if (player.y > CEILING_Y) {
     player.y = CEILING_Y;
@@ -552,6 +584,51 @@ function updateWeapons(state, player, input) {
   }
 }
 
+function updateCrashSlide(state, player, dt) {
+  player.y = 0;
+  player.vy = 0;
+  player.pitch = -0.16;
+  player.speed = Math.max(0, player.speed - 210 * dt);
+  player.vx = player.dir * player.speed;
+  player.x = clamp(player.x + player.vx * dt, MIN_X + 60, MAX_X - 60);
+  player.rotorPhase += dt * 6;
+  player.crashSlideTicks -= 1;
+
+  if (state.tick % 4 === 0) {
+    state.events.push({ type: "explosion", x: player.x, y: 8, size: 0.55, tick: state.tick });
+  }
+
+  // Wreck drags across the ground destroying any vehicles or troops in its path
+  for (const t of state.targets) {
+    if (t.hp > 0 && Math.abs(t.x - player.x) <= 52) {
+      t.hp = 0;
+      t.respawnTimer = 6;
+      state.events.push({ type: "explosion", x: t.x, y: 18, size: 1.25, tick: state.tick });
+      state.events.push({ type: "crash_destroyed_unit", unitId: t.id, kind: t.kind, tick: state.tick });
+    }
+  }
+  for (let i = state.paratroopers.length - 1; i >= 0; i--) {
+    const p = state.paratroopers[i];
+    if (p.y <= 36 && Math.abs(p.x - player.x) <= 52) {
+      state.events.push({ type: "explosion", x: p.x, y: 10, size: 0.6, tick: state.tick });
+      state.events.push({ type: "crash_destroyed_unit", unitId: p.id, kind: p.kind, tick: state.tick });
+      state.paratroopers.splice(i, 1);
+    }
+  }
+
+  if (player.crashSlideTicks <= 0 || player.speed < 15) {
+    player.crashing = false;
+    player.alive = false;
+    player.hp = 0;
+    player.vx = 0;
+    player.speed = 0;
+    player.respawnTicks = 180;
+    state.teamFunds[player.team] = Math.max(0, state.teamFunds[player.team] - 100);
+    state.events.push({ type: "explosion", x: player.x, y: 12, size: 1.6, tick: state.tick });
+    state.events.push({ type: "player_crashed", playerId: player.id, x: player.x, y: 0, tick: state.tick });
+  }
+}
+
 export function stepSimulation(state, inputsByPlayer = {}) {
   state.tick += 1;
   state.time = state.tick * DT;
@@ -565,6 +642,8 @@ export function stepSimulation(state, inputsByPlayer = {}) {
         const base = BASES[player.team];
         const cfg = AIRCRAFT_CONFIG[player.aircraftType];
         player.alive = true;
+        player.crashing = false;
+        player.crashSlideTicks = 0;
         player.x = base.padCenterX;
         player.y = 0;
         player.vx = 0;
@@ -584,6 +663,11 @@ export function stepSimulation(state, inputsByPlayer = {}) {
         }
         state.events.push({ type: "player_respawned", playerId: player.id, tick: state.tick });
       }
+      continue;
+    }
+
+    if (player.crashing) {
+      updateCrashSlide(state, player, DT);
       continue;
     }
 

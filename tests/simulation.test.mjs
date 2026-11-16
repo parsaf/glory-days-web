@@ -256,16 +256,16 @@ test("Airborne idle helicopter gently sinks under gravity until landing", () => 
   assert.ok(player.vy <= 0);
 });
 
-test("P-47 accelerates on Left/Right, changes pitch only on Up/Down, and decelerates into a stall fall without speed input", () => {
+test("P-47 accelerates on Left/Right, changes pitch only on Up/Down, and stalls from glide into angled nose-dive (never vertical drop)", () => {
   const state = createInitialState({ includePracticeTargets: false });
   const player = addPlayer(state, "p1", "allied", "p47");
   player.x = -1000;
-  player.y = 500;
+  player.y = 800;
   player.speed = 360;
   player.vx = 360;
   player.dir = 1;
 
-  // Hold Right + Up -> accelerates & pitches up; then release Right and hold Up -> speed decelerates without Up changing speed
+  // Hold Right -> accelerates
   stepSimulation(state, { p1: { right: true } });
   const speedAfterThrust = player.speed;
   assert.ok(speedAfterThrust > 360, "Right arrow accelerates plane");
@@ -275,47 +275,93 @@ test("P-47 accelerates on Left/Right, changes pitch only on Up/Down, and deceler
   assert.ok(player.pitch < -0.2, "Down arrow pitches nose down");
   assert.ok(player.speed < speedAfterThrust, "Without Left/Right input, speed decelerates even when pitching");
 
-  // Continue with no Left/Right input until speed drops below stallSpeed and gravity pulls plane down
-  for (let t = 0; t < 180; t++) stepSimulation(state, { p1: {} });
-  assert.ok(player.speed < AIRCRAFT_CONFIG.p47.stallSpeed, "Plane decelerates below stall speed");
-  assert.ok(player.stallVy < -50, "Stalled plane loses lift and falls under gravity");
-  assert.ok(player.vy < -50);
+  // Continue with no Left/Right input until below stallSpeed -> enters angled glide-to-nose-dive with forward momentum
+  for (let t = 0; t < 140; t++) stepSimulation(state, { p1: {} });
+  assert.ok(player.speed < AIRCRAFT_CONFIG.p47.stallSpeed, "Plane decelerates below stall lift threshold");
+  assert.ok(player.pitch < -0.40 && player.pitch >= AIRCRAFT_CONFIG.p47.maxDivePitch - 0.01, "Nose enters angled dive rather than straight vertical fall");
+  assert.ok(player.vx > 120, "Plane retains forward dive velocity instead of dropping straight out of the sky");
+  assert.ok(player.vy < -50, "Plane loses altitude along the dive angle");
 });
 
-test("P-47 takes proportional damage on hard airstrip landings and off-base ground impacts", () => {
-  // 1. Moderate hard landing on friendly airstrip -> survives with proportional damage
+test("P-47 survivable ground touch bounces back up; fatal crash slides and destroys vehicles/troops in its path", () => {
+  // 1. Moderate hard landing on friendly airstrip -> takes damage and bounces back up
   const state = createInitialState({ includePracticeTargets: false });
   const pStrip = addPlayer(state, "p1", "allied", "p47");
   pStrip.x = BASES.allied.padCenterX;
   pStrip.y = 1;
-  pStrip.speed = 320;
-  pStrip.vx = 320;
-  pStrip.pitch = -0.35;
-  pStrip.stallVy = -110;
+  pStrip.speed = 340;
+  pStrip.vx = 340;
+  pStrip.pitch = -0.34;
   stepSimulation(state, { p1: { down: true } });
-  assert.equal(pStrip.alive, true, "Moderate hard landing damages rather than instant-killing");
+  assert.equal(pStrip.alive, true, "Moderate hard landing survives with proportional damage");
   assert.ok(pStrip.hp < pStrip.maxHp, "Hard landing on airstrip inflicts proportional damage");
+  assert.ok(pStrip.y > 1 && pStrip.vy > 40, "Survivable ground impact bounces plane back up");
 
-  // 2. High-momentum dive slam -> destroys plane
-  const state2 = createInitialState({ includePracticeTargets: false });
-  const pSlam = addPlayer(state2, "p2", "allied", "p47");
-  pSlam.x = BASES.allied.padCenterX;
-  pSlam.y = 1;
-  pSlam.speed = 540;
-  pSlam.vx = 450;
-  pSlam.pitch = -0.55;
-  pSlam.stallVy = -260;
-  stepSimulation(state2, { p2: { down: true } });
-  assert.equal(pSlam.alive, false, "Extreme momentum hard slam destroys plane");
-
-  // 3. Touching ground outside friendly airstrip -> takes immediate proportional impact damage
-  const state3 = createInitialState({ includePracticeTargets: false });
-  const pOff = addPlayer(state3, "p3", "allied", "p47");
+  // 2. Survivable off-base ground touch -> takes proportional damage and bounces back up
+  const stateOff = createInitialState({ includePracticeTargets: false });
+  const pOff = addPlayer(stateOff, "pOff", "allied", "p47");
   pOff.x = 0; // middle of map, outside base
   pOff.y = 1;
   pOff.speed = 280;
   pOff.vx = 280;
   pOff.pitch = -0.18;
-  for (let t = 0; t < 3; t++) stepSimulation(state3, { p3: { down: true } });
-  assert.ok(pOff.hp < pOff.maxHp, "Touching ground outside base deals proportional impact damage");
+  for (let t = 0; t < 3; t++) {
+    stepSimulation(stateOff, { pOff: { down: true } });
+    if (pOff.hp < pOff.maxHp) break;
+  }
+  assert.ok(pOff.hp < pOff.maxHp && pOff.hp > 0, "Touching ground outside base deals proportional survivable damage");
+  assert.ok(pOff.y > 1 && pOff.vy > 40, "Survivable off-base touch bounces plane back up");
+
+  // 3. Fatal dive slam -> enters crash-landing slide, drags along ground, destroys vehicle + troop in path, then dies
+  const stateCrash = createInitialState({ includePracticeTargets: false });
+  stateCrash.targets.push({
+    id: "victim_tank",
+    kind: "main_battle_tank",
+    team: "enemy",
+    x: 110,
+    y: 0,
+    vx: 0,
+    minX: 110,
+    maxX: 110,
+    hp: 650,
+    maxHp: 650,
+    dir: -1,
+    respawnTimer: 0
+  });
+  stateCrash.paratroopers.push({
+    id: "victim_troop",
+    team: "enemy",
+    kind: "infantry",
+    x: 150,
+    y: 0,
+    vx: 0,
+    vy: 0,
+    dir: -1,
+    phase: "march",
+    collapseTimer: 0,
+    walkPhase: 0,
+    hp: 40
+  });
+
+  const pSlam = addPlayer(stateCrash, "p2", "allied", "p47");
+  pSlam.x = 0;
+  pSlam.y = 2;
+  pSlam.hp = 60; // low enough that high-speed dive slam is fatal
+  pSlam.speed = 520;
+  pSlam.vx = 520;
+  pSlam.pitch = -0.52;
+
+  stepSimulation(stateCrash, { p2: { down: true } });
+  assert.equal(pSlam.crashing, true, "Fatal impact begins crash-landing slide instead of instant vanish");
+  assert.equal(pSlam.alive, true);
+
+  const slideStartX = pSlam.x;
+  for (let t = 0; t < 80; t++) {
+    stepSimulation(stateCrash, { p2: {} });
+  }
+  assert.ok(pSlam.x > slideStartX + 80, "Crash-landing wreck drags forward along ground");
+  assert.equal(stateCrash.targets[0].hp, 0, "Crash slide destroys ground vehicle in its path");
+  assert.equal(stateCrash.paratroopers.length, 0, "Crash slide destroys ground troops in its path");
+  assert.equal(pSlam.crashing, false);
+  assert.equal(pSlam.alive, false, "Wreck detonates and starts respawn after slide completes");
 });
