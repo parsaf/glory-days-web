@@ -6,12 +6,27 @@ export class KeyboardInput {
     this.onAction = onAction;
 
     this._onKeyDown = (e) => {
+      const target = e.target;
+      const inFormField = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT");
+      if (inFormField) {
+        if (e.code === "Escape" || e.code === "Enter") {
+          target.blur();
+          e.preventDefault();
+        }
+        return;
+      }
+
       if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) {
         e.preventDefault();
       }
       if (e.repeat) return;
 
       this.keys.add(e.code);
+
+      if (e.code === "Backquote") {
+        this.onAction({ type: "toggleTuner" });
+        return;
+      }
 
       if (e.code === "KeyQ") {
         this.menuOpen = !this.menuOpen;

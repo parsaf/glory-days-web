@@ -7,6 +7,7 @@ import {
   BURST_RECHARGE_DELAY,
   BURST_RECHARGE_RATE,
   CEILING_Y,
+  DEFAULT_P47_CONFIG,
   DT,
   GRAVITY,
   GROUND_Y,
@@ -106,7 +107,10 @@ export function createPlayer(id, team = "allied", aircraftType = "heli") {
     turnStartDir: dir,
     turnStartSpeed: 0,
     airborneTime: 0,
-    rotorPhase: 0
+    rotorPhase: 0,
+    throttleOffTime: 0,
+    stallTime: 0,
+    effectivePitch: 0
   };
 }
 
@@ -123,6 +127,83 @@ export function removePlayer(state, id) {
 export function isOnFriendlyPad(player) {
   const base = BASES[player.team];
   return player.x >= base.padMinX && player.x <= base.padMaxX && player.y <= 3;
+}
+
+export function updateP47Config(patch = {}) {
+  if (!patch || typeof patch !== "object") {
+    return { ...AIRCRAFT_CONFIG.p47 };
+  }
+  if (patch.reset) {
+    Object.assign(AIRCRAFT_CONFIG.p47, DEFAULT_P47_CONFIG);
+    return { ...AIRCRAFT_CONFIG.p47 };
+  }
+  for (const [key, rawVal] of Object.entries(patch)) {
+    if (!(key in DEFAULT_P47_CONFIG)) continue;
+    if (typeof DEFAULT_P47_CONFIG[key] === "number") {
+      const num = Number(rawVal);
+      if (Number.isFinite(num)) {
+        AIRCRAFT_CONFIG.p47[key] = num;
+      }
+    }
+  }
+  return { ...AIRCRAFT_CONFIG.p47 };
+}
+
+export function spawnPlayerP47Test(state, playerId, mode = "air") {
+  const player = state.players[playerId];
+  if (!player) return false;
+  const base = BASES[player.team];
+  const cfg = AIRCRAFT_CONFIG.p47;
+  const dir = player.team === "allied" ? 1 : -1;
+
+  player.aircraftType = "p47";
+  player.maxHp = cfg.maxHp;
+  player.hp = cfg.maxHp;
+  player.secondaryAmmo = cfg.maxSecondary;
+  player.maxSecondary = cfg.maxSecondary;
+  player.flaresAmmo = cfg.maxFlares;
+  player.maxFlares = cfg.maxFlares;
+  player.cabinCapacity = cfg.cabinCapacity;
+  player.passengers = [];
+  player.alive = true;
+  player.crashing = false;
+  player.crashSlideTicks = 0;
+  player.respawnTicks = 0;
+  player.turnTimer = 0;
+  player.turnDuration = cfg.turnDuration;
+  player.dir = dir;
+  player.turnStartDir = dir;
+  player.burstReservoir = BURST_MAX_TICKS;
+  player.primaryCooldown = 0;
+  player.primaryIdleTicks = 0;
+  player.secondaryCooldown = 0;
+  player.flareCooldown = 0;
+  player.resupplyTicks = 0;
+  player.throttleOffTime = 0;
+  player.stallTime = 0;
+  player.stallVy = 0;
+  player.pitch = 0;
+  player.effectivePitch = 0;
+  player.airborneTime = 0;
+
+  if (mode === "runway") {
+    player.x = base.padCenterX;
+    player.y = 0;
+    player.speed = 0;
+    player.vx = 0;
+    player.vy = 0;
+    player.landedAtBase = true;
+  } else {
+    player.x = player.team === "allied" ? -1200 : 1200;
+    player.y = 320;
+    player.speed = cfg.cruiseSpeed;
+    player.vx = dir * cfg.cruiseSpeed;
+    player.vy = 0;
+    player.landedAtBase = false;
+  }
+
+  state.events.push({ type: "p47_test_spawned", playerId, mode, tick: state.tick });
+  return true;
 }
 
 export function swapPlayerAircraft(state, playerId, nextType = null) {
@@ -147,6 +228,9 @@ export function swapPlayerAircraft(state, playerId, nextType = null) {
   player.speed = 0;
   player.stallVy = 0;
   player.pitch = 0;
+  player.effectivePitch = 0;
+  player.throttleOffTime = 0;
+  player.stallTime = 0;
   player.crashing = false;
   player.crashSlideTicks = 0;
   player.turnTimer = 0;
@@ -274,6 +358,7 @@ function updateP47(state, player, input, dt) {
   const cfg = AIRCRAFT_CONFIG.p47;
   const hInput = (input.right ? 1 : 0) - (input.left ? 1 : 0);
   const vInput = (input.up ? 1 : 0) - (input.down ? 1 : 0);
+  const turnDur = Math.max(0.05, cfg.turnDuration);
 
   // Sync scalar speed if external state/test set vx directly while airborne
   if (player.y > 1 && player.speed === 0 && Math.abs(player.vx) > 10) {
@@ -287,7 +372,10 @@ function updateP47(state, player, input, dt) {
     player.vy = 0;
     player.stallVy = 0;
     player.pitch = 0;
+    player.effectivePitch = 0;
     player.airborneTime = 0;
+    player.throttleOffTime = 0;
+    player.stallTime = 0;
 
     if (hInput !== 0) {
       if (player.speed < 15) player.dir = hInput;
@@ -310,6 +398,7 @@ function updateP47(state, player, input, dt) {
         player.crashSlideTicks = cfg.crashSlideTicks;
         player.speed = Math.max(190, player.speed);
         player.pitch = -0.16;
+        player.effectivePitch = -0.16;
         state.events.push({ type: "crash_slide_start", playerId: player.id, x: player.x, tick: state.tick });
         return "ok";
       }
@@ -322,6 +411,7 @@ function updateP47(state, player, input, dt) {
     if (vInput > 0 && player.speed >= cfg.takeoffSpeed) {
       player.y = 4;
       player.pitch = 0.22;
+      player.effectivePitch = 0.22;
       player.vy = player.speed * Math.sin(player.pitch);
     }
     player.rotorPhase += dt * (player.speed > 20 ? 22 : 10);
@@ -335,15 +425,17 @@ function updateP47(state, player, input, dt) {
   // Wide U-turn with continuous horizontal momentum: vx(p) = startDir * startSpeed * cos(pi * p)
   if (player.turnTimer > 0) {
     player.turnTimer += dt;
-    const p = Math.min(1, player.turnTimer / cfg.turnDuration);
+    player.turnDuration = turnDur;
+    const p = Math.min(1, player.turnTimer / turnDur);
     const speed = Math.max(cfg.stallSpeed, player.turnStartSpeed);
     player.vx = player.turnStartDir * speed * Math.cos(Math.PI * p);
     // Gentle banking altitude arc through the U-turn
-    player.vy = 26 * Math.PI * Math.cos(Math.PI * p) / cfg.turnDuration;
+    player.vy = 26 * Math.PI * Math.cos(Math.PI * p) / turnDur;
     player.pitch = 0;
+    player.effectivePitch = 0;
     player.x = clamp(player.x + player.vx * dt, MIN_X + 80, MAX_X - 80);
     player.y = clamp(player.y + player.vy * dt, 18, CEILING_Y);
-    if (player.turnTimer >= cfg.turnDuration) {
+    if (player.turnTimer >= turnDur) {
       player.turnTimer = 0;
       player.dir = -player.turnStartDir;
       player.speed = speed;
@@ -352,53 +444,72 @@ function updateP47(state, player, input, dt) {
     return "ok";
   }
 
-  // Left/Right controls horizontal thrust & U-turn; no Left/Right decelerates toward minGlideSpeed via drag
+  // Left/Right controls horizontal thrust & U-turn; no Left/Right coasts for throttleReleaseDelay before drag acts
   if (hInput === player.dir) {
+    player.throttleOffTime = 0;
     player.speed = Math.min(cfg.maxSpeed, player.speed + cfg.accelRate * dt);
   } else if (hInput === -player.dir) {
+    player.throttleOffTime = 0;
     if (player.speed >= cfg.stallSpeed * 0.8) {
       player.turnTimer = dt;
+      player.turnDuration = turnDur;
       player.turnStartDir = player.dir;
       player.turnStartSpeed = player.speed;
       return "ok";
     }
     player.speed = Math.max(cfg.minGlideSpeed, player.speed - cfg.dragDecelRate * 1.4 * dt);
-  } else if (player.speed > cfg.minGlideSpeed) {
-    player.speed = Math.max(cfg.minGlideSpeed, player.speed - cfg.dragDecelRate * dt);
+  } else {
+    player.throttleOffTime = (player.throttleOffTime || 0) + dt;
+    if (player.throttleOffTime >= cfg.throttleReleaseDelay && player.speed > cfg.minGlideSpeed) {
+      player.speed = Math.max(cfg.minGlideSpeed, player.speed - cfg.dragDecelRate * dt);
+    }
   }
 
-  // Lift factor: 1.0 at >= stallSpeed (220), dropping smoothly to 0.0 at minGlideSpeed (175)
-  const lift = clamp((player.speed - cfg.minGlideSpeed) / (cfg.stallSpeed - cfg.minGlideSpeed), 0, 1);
+  // Lift factor: 1.0 at >= stallSpeed, dropping smoothly to 0.0 at minGlideSpeed
+  const stallRange = Math.max(1, cfg.stallSpeed - cfg.minGlideSpeed);
+  const lift = clamp((player.speed - cfg.minGlideSpeed) / stallRange, 0, 1);
 
   // Up/Down ONLY changes pitch & vertical direction without changing scalar airspeed
   if (vInput !== 0) {
     player.pitch = clamp(player.pitch + vInput * cfg.pitchRate * dt, -cfg.maxPitch, cfg.maxPitch);
-  } else if (lift >= 1) {
-    player.pitch *= Math.pow(0.10, dt);
+  } else if (lift >= 1 && cfg.pitchLevelRate > 0) {
+    player.pitch *= Math.exp(-cfg.pitchLevelRate * dt);
   }
 
-  // Below lift threshold: transition from shallow glide into a forward angled nose-dive (not a vertical fall!)
+  // Below lift threshold: wait stallGlideDelay in shallow glide, then transition smoothly into angled nose-dive
   if (lift < 1) {
-    const targetDivePitch = -0.18 + (cfg.maxDivePitch - (-0.18)) * (1 - lift);
-    player.pitch += (targetDivePitch - player.pitch) * Math.min(1, dt * 2.8);
+    player.stallTime = (player.stallTime || 0) + dt;
+    const afterDelay = Math.max(0, player.stallTime - cfg.stallGlideDelay);
+    const diveBlend = player.stallTime < cfg.stallGlideDelay
+      ? 0
+      : clamp(afterDelay / 0.45, 0, 1) * (1 - lift);
+    const targetDivePitch = cfg.glidePitch + (cfg.maxDivePitch - cfg.glidePitch) * diveBlend;
+    player.pitch += (targetDivePitch - player.pitch) * Math.min(1, dt * cfg.divePitchRate);
     if (vInput > 0) {
       // Without thrust above stallSpeed, pulling Up cannot climb; caps at shallow glide
-      player.pitch = Math.min(player.pitch, -0.12);
+      player.pitch = Math.min(player.pitch, Math.max(cfg.glidePitch, -0.12));
     }
     // Gravity along dive angle keeps forward dive momentum alive rather than dropping out of the sky
-    if (hInput === 0) {
-      player.speed = Math.min(cfg.stallSpeed - 6, Math.max(cfg.minGlideSpeed, player.speed + Math.max(0, -Math.sin(player.pitch)) * 55 * dt));
+    if (hInput === 0 && cfg.diveGravityAccel > 0) {
+      const diveCap = Math.max(cfg.minGlideSpeed, cfg.stallSpeed - 6);
+      if (player.speed < diveCap) {
+        player.speed = Math.min(diveCap, player.speed + Math.max(0, -Math.sin(player.pitch)) * cfg.diveGravityAccel * dt);
+      }
     }
+  } else {
+    player.stallTime = 0;
   }
-  player.stallVy = 0;
+
+  player.stallVy = (1 - lift) * cfg.stallSinkGravity;
 
   // Shallow, long-wavelength vertical sine-wave cruise oscillation (active only with wing lift)
   const waveVelY = Math.cos(player.airborneTime * cfg.sineOmega) * cfg.sineAmpVel * lift;
   const wavePitch = Math.cos(player.airborneTime * cfg.sineOmega) * cfg.sinePitchAmp * lift;
-  const effectivePitch = clamp(player.pitch + (vInput === 0 ? wavePitch : 0), cfg.maxDivePitch, cfg.maxPitch);
+  const minClampPitch = Math.min(-cfg.maxPitch, cfg.maxDivePitch);
+  const effectivePitch = clamp(player.pitch + (vInput === 0 ? wavePitch : 0), minClampPitch, cfg.maxPitch);
 
   player.vx = player.dir * player.speed * Math.cos(effectivePitch);
-  player.vy = player.speed * Math.sin(effectivePitch) + (vInput === 0 ? waveVelY : 0);
+  player.vy = player.speed * Math.sin(effectivePitch) + (vInput === 0 ? waveVelY : 0) - player.stallVy;
 
   player.x += player.vx * dt;
   player.y += player.vy * dt;
@@ -407,11 +518,13 @@ function updateP47(state, player, input, dt) {
   if (player.x >= MAX_X - 180 && player.dir === 1) {
     player.x = MAX_X - 180;
     player.turnTimer = dt;
+    player.turnDuration = turnDur;
     player.turnStartDir = 1;
     player.turnStartSpeed = Math.max(cfg.stallSpeed, player.speed);
   } else if (player.x <= MIN_X + 180 && player.dir === -1) {
     player.x = MIN_X + 180;
     player.turnTimer = dt;
+    player.turnDuration = turnDur;
     player.turnStartDir = -1;
     player.turnStartSpeed = Math.max(cfg.stallSpeed, player.speed);
   }
@@ -428,6 +541,9 @@ function updateP47(state, player, input, dt) {
       player.vy = 0;
       player.stallVy = 0;
       player.pitch = 0;
+      player.effectivePitch = 0;
+      player.throttleOffTime = 0;
+      player.stallTime = 0;
       player.speed = impactVx;
     } else {
       const dmg = onStrip
@@ -439,12 +555,13 @@ function updateP47(state, player, input, dt) {
       if (player.hp > 0) {
         // Survives impact -> bounces back up a little into the air!
         player.y = 2;
-        player.speed = Math.max(cfg.minGlideSpeed, impactVx * 0.78);
-        const bounceVy = clamp(impactVy * 0.55 + 38, 48, 125);
-        player.pitch = clamp(Math.atan2(bounceVy, player.speed), 0.12, 0.30);
+        player.stallTime = 0;
+        player.stallVy = 0;
+        player.speed = Math.max(cfg.minGlideSpeed * Math.min(1, cfg.bounceSpeedRetention), impactVx * cfg.bounceSpeedRetention);
+        const bounceVy = clamp(impactVy * cfg.bounceElasticity + cfg.bounceBaseVy, 24, 180);
+        player.pitch = clamp(Math.atan2(bounceVy, Math.max(1, player.speed)), 0.12, 0.36);
         player.vx = player.dir * player.speed * Math.cos(player.pitch);
         player.vy = bounceVy;
-        player.stallVy = 0;
         player.effectivePitch = player.pitch;
         state.events.push({ type: "hard_landing", playerId: player.id, x: player.x, damage: dmg, bounced: true, onStrip, tick: state.tick });
         return "ok";
@@ -459,6 +576,7 @@ function updateP47(state, player, input, dt) {
       player.speed = Math.max(210, impactVx * 0.85);
       player.vx = player.dir * player.speed;
       player.pitch = -0.16;
+      player.effectivePitch = -0.16;
       state.events.push({ type: "crash_slide_start", playerId: player.id, x: player.x, tick: state.tick });
       return "ok";
     }
@@ -585,10 +703,12 @@ function updateWeapons(state, player, input) {
 }
 
 function updateCrashSlide(state, player, dt) {
+  const cfg = AIRCRAFT_CONFIG[player.aircraftType] || AIRCRAFT_CONFIG.p47;
   player.y = 0;
   player.vy = 0;
   player.pitch = -0.16;
-  player.speed = Math.max(0, player.speed - 210 * dt);
+  player.effectivePitch = -0.16;
+  player.speed = Math.max(0, player.speed - (cfg.crashSlideDecel ?? 210) * dt);
   player.vx = player.dir * player.speed;
   player.x = clamp(player.x + player.vx * dt, MIN_X + 60, MAX_X - 60);
   player.rotorPhase += dt * 6;
@@ -651,12 +771,16 @@ export function stepSimulation(state, inputsByPlayer = {}) {
         player.speed = 0;
         player.stallVy = 0;
         player.pitch = 0;
+        player.effectivePitch = 0;
+        player.throttleOffTime = 0;
+        player.stallTime = 0;
         player.dir = player.team === "allied" ? 1 : -1;
         player.hp = cfg.maxHp;
         player.secondaryAmmo = cfg.maxSecondary;
         player.flaresAmmo = cfg.maxFlares;
         player.burstReservoir = BURST_MAX_TICKS;
         player.turnTimer = 0;
+        player.turnDuration = cfg.turnDuration;
         player.landedAtBase = true;
         if (player.aircraftType === "heli") {
           player.passengers = ["infantry", "infantry", "infantry", "infantry"];

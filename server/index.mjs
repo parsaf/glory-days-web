@@ -3,14 +3,16 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { DT } from "../shared/constants.mjs";
+import { AIRCRAFT_CONFIG, DT } from "../shared/constants.mjs";
 import {
   addPlayer,
   createInitialState,
   handlePlayerUtility,
   removePlayer,
+  spawnPlayerP47Test,
   stepSimulation,
-  swapPlayerAircraft
+  swapPlayerAircraft,
+  updateP47Config
 } from "../shared/simulation.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -172,7 +174,7 @@ server.on("upgrade", (req, socket) => {
   addPlayer(state, playerId, team, "heli");
   clients.set(playerId, { socket, team, input: {} });
 
-  socket.write(encodeWsFrame(JSON.stringify({ type: "welcome", playerId, team, state })));
+  socket.write(encodeWsFrame(JSON.stringify({ type: "welcome", playerId, team, state, p47Config: { ...AIRCRAFT_CONFIG.p47 } })));
 
   let rxBuf = Buffer.alloc(0);
   socket.on("data", (chunk) => {
@@ -200,6 +202,14 @@ server.on("upgrade", (req, socket) => {
             handlePlayerUtility(state, playerId);
           } else if (cmd.type === "swapAircraft") {
             swapPlayerAircraft(state, playerId);
+          } else if (cmd.type === "updateP47Config" && cmd.patch) {
+            const config = updateP47Config(cmd.patch);
+            const frame = encodeWsFrame(JSON.stringify({ type: "p47Config", config }));
+            for (const c of clients.values()) {
+              if (!c.socket.destroyed) c.socket.write(frame);
+            }
+          } else if (cmd.type === "spawnP47Test") {
+            spawnPlayerP47Test(state, playerId, cmd.mode || "air");
           }
         } catch {
           // Ignore malformed JSON payloads

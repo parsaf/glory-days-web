@@ -14,8 +14,10 @@ import {
   addPlayer,
   createInitialState,
   handlePlayerUtility,
+  spawnPlayerP47Test,
   stepSimulation,
-  swapPlayerAircraft
+  swapPlayerAircraft,
+  updateP47Config
 } from "../shared/simulation.mjs";
 
 test("Primary gun (A) burst reservoir fires 12/s for 90 ticks, drops to 1/0.5s, and recharges after 120 idle ticks", () => {
@@ -364,4 +366,57 @@ test("P-47 survivable ground touch bounces back up; fatal crash slides and destr
   assert.equal(stateCrash.paratroopers.length, 0, "Crash slide destroys ground troops in its path");
   assert.equal(pSlam.crashing, false);
   assert.equal(pSlam.alive, false, "Wreck detonates and starts respawn after slide completes");
+});
+
+test("Dev P-47 config tuning, delay parameters (throttleReleaseDelay, stallGlideDelay), and test spawner work cleanly", () => {
+  try {
+    const updated = updateP47Config({
+      throttleReleaseDelay: 0.40,
+      stallGlideDelay: 0.50,
+      glidePitch: -0.15,
+      maxDivePitch: -0.70,
+      cruiseSpeed: 440,
+      ignoreUnknownKey: 999
+    });
+    assert.equal(updated.throttleReleaseDelay, 0.40);
+    assert.equal(updated.stallGlideDelay, 0.50);
+    assert.equal("ignoreUnknownKey" in updated, false);
+
+    const state = createInitialState({ includePracticeTargets: false });
+    const p1 = addPlayer(state, "p1", "allied", "heli");
+
+    // 1. Spawn in Air switches aircraft from Heli -> P-47 at tuned cruiseSpeed
+    assert.equal(spawnPlayerP47Test(state, "p1", "air"), true);
+    assert.equal(p1.aircraftType, "p47");
+    assert.equal(p1.speed, 440);
+    assert.ok(p1.y > 200);
+
+    // During throttleReleaseDelay (0.40s -> test 18 ticks = 0.30s), speed does not bleed yet
+    for (let t = 0; t < 18; t++) stepSimulation(state, { p1: {} });
+    assert.equal(p1.speed, 440, "Speed holds steady while inside throttleReleaseDelay grace window");
+
+    // Past throttleReleaseDelay (another 18 ticks -> total 0.60s > 0.40s), drag reduces airspeed
+    for (let t = 0; t < 18; t++) stepSimulation(state, { p1: {} });
+    assert.ok(p1.speed < 440, "Aerodynamic drag engages once throttleReleaseDelay elapses");
+
+    // 2. Test stallGlideDelay: enter below stallSpeed and check pitch stays shallow during glide window
+    p1.speed = 180;
+    p1.pitch = -0.14;
+    for (let t = 0; t < 20; t++) stepSimulation(state, { p1: {} }); // 0.33s < 0.50s stallGlideDelay
+    assert.ok(p1.pitch > -0.22, "Plane stays in shallow glide during stallGlideDelay window");
+
+    for (let t = 0; t < 45; t++) stepSimulation(state, { p1: {} }); // well past 0.50s stallGlideDelay
+    assert.ok(p1.pitch < -0.35, "Plane deepens into nose-dive after stallGlideDelay expires");
+
+    // 3. Spawn on Runway places P-47 resting on friendly base pad at 0 speed
+    assert.equal(spawnPlayerP47Test(state, "p1", "runway"), true);
+    assert.equal(p1.x, BASES.allied.padCenterX);
+    assert.equal(p1.y, 0);
+    assert.equal(p1.speed, 0);
+  } finally {
+    const resetCfg = updateP47Config({ reset: true });
+    assert.equal(resetCfg.throttleReleaseDelay, 0.20);
+    assert.equal(resetCfg.stallGlideDelay, 0.30);
+    assert.equal(resetCfg.cruiseSpeed, 420);
+  }
 });

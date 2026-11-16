@@ -72,16 +72,27 @@ export const AIRCRAFT_CONFIG = {
     cruiseSpeed: 420,
     maxSpeed: 540,
     accelRate: 260,
+    throttleReleaseDelay: 0.20,
     dragDecelRate: 135,
     stallSpeed: 220,
     minGlideSpeed: 175,
+    stallGlideDelay: 0.30,
+    glidePitch: -0.18,
     maxDivePitch: -0.62,
+    divePitchRate: 2.8,
+    diveGravityAccel: 55,
+    stallSinkGravity: 35,
     takeoffSpeed: 195,
     safeLandingVy: 45,
     safeLandingPitch: 0.26,
+    bounceElasticity: 0.55,
+    bounceBaseVy: 38,
+    bounceSpeedRetention: 0.78,
     crashSlideTicks: 66,
+    crashSlideDecel: 210,
     maxPitch: 0.56,
     pitchRate: 1.9,
+    pitchLevelRate: 2.3,
     maxSecondary: 8,
     secondaryCooldownTicks: 22,
     maxFlares: 6,
@@ -98,6 +109,59 @@ export const AIRCRAFT_CONFIG = {
     hitRadius: 30
   }
 };
+
+export const DEFAULT_P47_CONFIG = Object.freeze({ ...AIRCRAFT_CONFIG.p47 });
+
+export const P47_TUNING_SCHEMA = [
+  {
+    group: "Speed, Thrust & Drag",
+    items: [
+      { key: "maxSpeed", label: "Max Airspeed", min: 250, max: 900, step: 10, unit: "px/s", desc: "Top horizontal speed under full thrust." },
+      { key: "cruiseSpeed", label: "Cruise / Air-Spawn Speed", min: 200, max: 750, step: 10, unit: "px/s", desc: "Initial speed when spawning the P-47 in mid-air." },
+      { key: "takeoffSpeed", label: "Takeoff Speed", min: 80, max: 350, step: 5, unit: "px/s", desc: "Runway speed needed before Up lifts off." },
+      { key: "accelRate", label: "Thrust Accel", min: 50, max: 700, step: 10, unit: "px/s²", desc: "Forward acceleration while holding Left/Right." },
+      { key: "throttleReleaseDelay", label: "Throttle Release Delay", min: 0, max: 1.5, step: 0.02, unit: "s", desc: "Coast grace time after releasing Left/Right before drag acts." },
+      { key: "dragDecelRate", label: "Aerodynamic Drag", min: 10, max: 450, step: 5, unit: "px/s²", desc: "Speed bleed per second after release delay expires." }
+    ]
+  },
+  {
+    group: "Pitch & Cruise Sine Wave",
+    items: [
+      { key: "pitchRate", label: "Pitch Rate", min: 0.4, max: 5.0, step: 0.1, unit: "rad/s", desc: "Nose rotation responsiveness on Up/Down." },
+      { key: "maxPitch", label: "Max Manual Pitch", min: 0.2, max: 1.2, step: 0.02, unit: "rad", desc: "Steepest climb/dive angle commanded by Up/Down." },
+      { key: "pitchLevelRate", label: "Auto-Level Damping", min: 0, max: 8.0, step: 0.1, unit: "1/s", desc: "How fast nose returns to level when Up/Down released." },
+      { key: "sineOmega", label: "Sine Wave Freq", min: 0, max: 4.0, step: 0.05, unit: "rad/s", desc: "Frequency of the cruise vertical oscillation (lower = longer wavelength)." },
+      { key: "sineAmpVel", label: "Sine Wave Vertical Vel", min: 0, max: 80, step: 1, unit: "px/s", desc: "Gentle vertical speed amplitude of cruise bobbing." },
+      { key: "sinePitchAmp", label: "Sine Wave Pitch Bob", min: 0, max: 0.15, step: 0.004, unit: "rad", desc: "Nose tilt amplitude paired with the cruise sine wave." }
+    ]
+  },
+  {
+    group: "Stall, Glide & Gravity",
+    items: [
+      { key: "stallSpeed", label: "Stall Lift Threshold", min: 100, max: 420, step: 5, unit: "px/s", desc: "Speed below which wing lift begins dropping off." },
+      { key: "minGlideSpeed", label: "Zero-Lift Speed Floor", min: 40, max: 320, step: 5, unit: "px/s", desc: "Speed where lift reaches 0% and drag floor stabilizes." },
+      { key: "stallGlideDelay", label: "Stall Glide Delay", min: 0, max: 2.0, step: 0.05, unit: "s", desc: "Grace window holding shallow glide before deepening to nose-dive." },
+      { key: "glidePitch", label: "Initial Glide Pitch", min: -0.5, max: 0, step: 0.02, unit: "rad", desc: "Shallow downward angle at onset of stall." },
+      { key: "maxDivePitch", label: "Max Stall Dive Pitch", min: -1.2, max: -0.1, step: 0.02, unit: "rad", desc: "Deepest nose-dive angle after lift loss (never vertical drop)." },
+      { key: "divePitchRate", label: "Dive Nose-Over Rate", min: 0.3, max: 8.0, step: 0.1, unit: "1/s", desc: "How quickly the nose rotates into the stall dive." },
+      { key: "diveGravityAccel", label: "Dive Gravity Accel", min: 0, max: 250, step: 5, unit: "px/s²", desc: "Forward speed sustained by gravity along the dive angle." },
+      { key: "stallSinkGravity", label: "Stall Gravity Sink", min: 0, max: 220, step: 5, unit: "px/s", desc: "Extra downward sink speed added as lift drops to 0%." }
+    ]
+  },
+  {
+    group: "Turn, Bounce & Crash Slide",
+    items: [
+      { key: "turnDuration", label: "U-Turn Duration", min: 0.2, max: 2.0, step: 0.05, unit: "s", desc: "Time taken for a wide U-turn reversal arc." },
+      { key: "safeLandingVy", label: "Safe Landing Max Sink", min: 10, max: 160, step: 5, unit: "px/s", desc: "Max vertical descent speed for zero-damage pad landing." },
+      { key: "safeLandingPitch", label: "Safe Landing Max Tilt", min: 0.05, max: 0.7, step: 0.02, unit: "rad", desc: "Max pitch angle for zero-damage pad landing." },
+      { key: "bounceElasticity", label: "Bounce Elasticity", min: 0, max: 1.2, step: 0.05, unit: "×", desc: "Vertical speed restitution multiplier on survivable impact." },
+      { key: "bounceBaseVy", label: "Bounce Min Impulse", min: 0, max: 120, step: 2, unit: "px/s", desc: "Base upward kick added on survivable ground bounce." },
+      { key: "bounceSpeedRetention", label: "Bounce Speed Kept", min: 0.2, max: 1.0, step: 0.02, unit: "×", desc: "Fraction of horizontal speed retained after bouncing." },
+      { key: "crashSlideTicks", label: "Crash Slide Duration", min: 10, max: 180, step: 2, unit: "ticks", desc: "Max 60 Hz ticks the fatal wreck drags along the ground." },
+      { key: "crashSlideDecel", label: "Crash Slide Friction", min: 40, max: 500, step: 10, unit: "px/s²", desc: "How fast the burning wreck slows while bulldozing units." }
+    ]
+  }
+];
 
 // Canonical Section 9 Render Pixel Heights at 1.0x Camera Zoom
 export const RENDER_HEIGHTS = {
