@@ -5,7 +5,7 @@ import {
   MISSILE_FUEL_DISTANCE,
   RENDER_HEIGHTS,
   WORLD_WIDTH
-} from "/shared/constants.mjs";
+} from "../../shared/constants.mjs";
 
 const SPRITE_NAMES = [
   "aa_flak_truck", "ambulance", "armored_apc", "b52_bomber", "base_hq", "bunker",
@@ -74,6 +74,15 @@ export class SpriteBattlefieldRenderer {
           life: 0.42,
           maxLife: 0.42,
           rearHit: ev.rearHit
+        });
+      } else if (ev.type === "hard_landing") {
+        this.explosions.push({
+          x: ev.x,
+          y: 8,
+          radius: 14,
+          life: 0.35,
+          maxLife: 0.35,
+          rearHit: false
         });
       }
     }
@@ -144,8 +153,9 @@ export class SpriteBattlefieldRenderer {
       return { key: frameKey, flipX, height: hMap[frameKey], angle: 0 };
     }
 
-    // Canvas rotate sign flips relative to world Y because screen Y increases downward
-    const angle = isHeli ? -player.pitch * player.dir : -(player.effectivePitch ?? player.pitch);
+    // Canvas rotate sign flips relative to world Y because screen Y increases downward;
+    // when flipX is active, ctx.scale(-1, 1) already mirrors local X, so rotate(-pitch) tilts nose down for both dirs
+    const angle = isHeli ? -player.pitch : -(player.effectivePitch ?? player.pitch);
     return {
       key: `${prefix}_fly_${spin}`,
       flipX: player.dir < 0,

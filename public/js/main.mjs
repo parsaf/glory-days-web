@@ -1,11 +1,11 @@
-import { DT } from "/shared/constants.mjs";
+import { DT } from "../../shared/constants.mjs";
 import {
   addPlayer,
   createInitialState,
   handlePlayerUtility,
   stepSimulation,
   swapPlayerAircraft
-} from "/shared/simulation.mjs";
+} from "../../shared/simulation.mjs";
 import { TacticalHud } from "./hud.mjs";
 import { KeyboardInput } from "./input.mjs";
 import { SpriteBattlefieldRenderer } from "./renderer.mjs";

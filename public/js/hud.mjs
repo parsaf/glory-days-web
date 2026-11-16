@@ -6,7 +6,7 @@ import {
   MIN_X,
   REQUISITION_MENU,
   WORLD_WIDTH
-} from "/shared/constants.mjs";
+} from "../../shared/constants.mjs";
 
 export class TacticalHud {
   constructor() {

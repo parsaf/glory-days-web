@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { SpriteBattlefieldRenderer } from "../public/js/renderer.mjs";
 import {
+  AIRCRAFT_CONFIG,
+  BASES,
   BURST_FIRE_INTERVAL,
   BURST_MAX_TICKS,
   BURST_RECHARGE_DELAY,
@@ -176,4 +179,143 @@ test("Helicopter E-key drops paratroopers that transition through chute collapse
   }
   assert.ok(sawCollapse, "Paratrooper enters chute-collapse transition upon landing");
   assert.equal(state.bunkers[1].owner, "allied", "Dropped paratrooper captures neutral bunker");
+});
+
+test("Helicopter free-drops bombs straight down when hovering and inherits exact chopper momentum when moving", () => {
+  const state = createInitialState({ includePracticeTargets: false });
+  const player = addPlayer(state, "p1", "allied", "heli");
+  player.x = 0;
+  player.y = 300;
+  player.vx = 0;
+  player.vy = 0;
+
+  // Hovering bomb drop -> zero horizontal speed (drops straight down)
+  stepSimulation(state, { p1: { fireSecondary: true } });
+  const hoverBomb = state.projectiles.find((p) => p.kind === "heli_bomb");
+  assert.ok(hoverBomb);
+  assert.equal(hoverBomb.vx, 0, "Hovering chopper bomb has 0 horizontal velocity");
+
+  // Moving forward bomb drop -> inherits helicopter momentum
+  state.projectiles = [];
+  player.secondaryCooldown = 0;
+  player.vx = 240;
+  player.vy = 15;
+  stepSimulation(state, { p1: { right: true, up: true, fireSecondary: true } });
+  const movingBomb = state.projectiles.find((p) => p.kind === "heli_bomb");
+  assert.ok(movingBomb);
+  assert.ok(movingBomb.vx > 200, "Moving chopper transfers forward horizontal momentum to bomb");
+  assert.equal(movingBomb.vx, player.vx);
+});
+
+test("Helicopter primary cannon shoots straight out front at 0 deg + pitch, and tilts nose-down when moving left or right", () => {
+  const state = createInitialState({ includePracticeTargets: false });
+  const player = addPlayer(state, "p1", "allied", "heli");
+  player.x = 0;
+  player.y = 300;
+  player.vx = 0;
+  player.vy = 0;
+  player.pitch = 0;
+
+  // Flat hover -> fires horizontally straight ahead (vy === 0)
+  stepSimulation(state, { p1: { firePrimary: true } });
+  const flatShot = state.projectiles.find((p) => p.kind === "bullet");
+  assert.ok(flatShot);
+  assert.ok(Math.abs(flatShot.vy) < 1e-6, "Flat chopper primary gun shoots straight ahead at 0 deg");
+
+  // Tilted nose-down -> fires downward at exact same pitch angle
+  state.projectiles = [];
+  player.primaryCooldown = 0;
+  player.vx = 240;
+  player.pitch = -0.2;
+  stepSimulation(state, { p1: { right: true, firePrimary: true } });
+  const pitchedShot = state.projectiles.find((p) => p.kind === "bullet");
+  assert.ok(pitchedShot);
+  assert.ok(pitchedShot.vy < -50, "Pitched chopper shoots downward along cockpit pitch");
+
+  // Left travel tilt verification in renderer: moving left must tilt nose-down (positive canvas angle inside flipped ctx)
+  const renderer = new SpriteBattlefieldRenderer({ getContext: () => ({}) });
+  const rightFrame = renderer.getAircraftFrame({ aircraftType: "heli", dir: 1, pitch: -0.22, rotorPhase: 0, turnTimer: 0 });
+  const leftFrame = renderer.getAircraftFrame({ aircraftType: "heli", dir: -1, pitch: -0.22, rotorPhase: 0, turnTimer: 0 });
+  assert.equal(rightFrame.flipX, false);
+  assert.equal(leftFrame.flipX, true);
+  assert.ok(rightFrame.angle > 0, "Right-moving chopper pitches nose down");
+  assert.ok(leftFrame.angle > 0, "Left-moving chopper also pitches nose down in flipped canvas space");
+});
+
+test("Airborne idle helicopter gently sinks under gravity until landing", () => {
+  const state = createInitialState({ includePracticeTargets: false });
+  const player = addPlayer(state, "p1", "allied", "heli");
+  player.x = BASES.allied.padCenterX;
+  player.y = 60;
+  player.vy = 0;
+
+  for (let t = 0; t < 180; t++) {
+    stepSimulation(state, { p1: {} });
+  }
+  assert.ok(player.y < 20, "Idle helicopter slowly sinks toward ground under gravity");
+  assert.ok(player.vy <= 0);
+});
+
+test("P-47 accelerates on Left/Right, changes pitch only on Up/Down, and decelerates into a stall fall without speed input", () => {
+  const state = createInitialState({ includePracticeTargets: false });
+  const player = addPlayer(state, "p1", "allied", "p47");
+  player.x = -1000;
+  player.y = 500;
+  player.speed = 360;
+  player.vx = 360;
+  player.dir = 1;
+
+  // Hold Right + Up -> accelerates & pitches up; then release Right and hold Up -> speed decelerates without Up changing speed
+  stepSimulation(state, { p1: { right: true } });
+  const speedAfterThrust = player.speed;
+  assert.ok(speedAfterThrust > 360, "Right arrow accelerates plane");
+
+  // Release horizontal input, hold Down -> pitch becomes negative, scalar speed strictly decreases via drag
+  for (let t = 0; t < 15; t++) stepSimulation(state, { p1: { down: true } });
+  assert.ok(player.pitch < -0.2, "Down arrow pitches nose down");
+  assert.ok(player.speed < speedAfterThrust, "Without Left/Right input, speed decelerates even when pitching");
+
+  // Continue with no Left/Right input until speed drops below stallSpeed and gravity pulls plane down
+  for (let t = 0; t < 180; t++) stepSimulation(state, { p1: {} });
+  assert.ok(player.speed < AIRCRAFT_CONFIG.p47.stallSpeed, "Plane decelerates below stall speed");
+  assert.ok(player.stallVy < -50, "Stalled plane loses lift and falls under gravity");
+  assert.ok(player.vy < -50);
+});
+
+test("P-47 takes proportional damage on hard airstrip landings and off-base ground impacts", () => {
+  // 1. Moderate hard landing on friendly airstrip -> survives with proportional damage
+  const state = createInitialState({ includePracticeTargets: false });
+  const pStrip = addPlayer(state, "p1", "allied", "p47");
+  pStrip.x = BASES.allied.padCenterX;
+  pStrip.y = 1;
+  pStrip.speed = 320;
+  pStrip.vx = 320;
+  pStrip.pitch = -0.35;
+  pStrip.stallVy = -110;
+  stepSimulation(state, { p1: { down: true } });
+  assert.equal(pStrip.alive, true, "Moderate hard landing damages rather than instant-killing");
+  assert.ok(pStrip.hp < pStrip.maxHp, "Hard landing on airstrip inflicts proportional damage");
+
+  // 2. High-momentum dive slam -> destroys plane
+  const state2 = createInitialState({ includePracticeTargets: false });
+  const pSlam = addPlayer(state2, "p2", "allied", "p47");
+  pSlam.x = BASES.allied.padCenterX;
+  pSlam.y = 1;
+  pSlam.speed = 540;
+  pSlam.vx = 450;
+  pSlam.pitch = -0.55;
+  pSlam.stallVy = -260;
+  stepSimulation(state2, { p2: { down: true } });
+  assert.equal(pSlam.alive, false, "Extreme momentum hard slam destroys plane");
+
+  // 3. Touching ground outside friendly airstrip -> takes immediate proportional impact damage
+  const state3 = createInitialState({ includePracticeTargets: false });
+  const pOff = addPlayer(state3, "p3", "allied", "p47");
+  pOff.x = 0; // middle of map, outside base
+  pOff.y = 1;
+  pOff.speed = 280;
+  pOff.vx = 280;
+  pOff.pitch = -0.18;
+  for (let t = 0; t < 3; t++) stepSimulation(state3, { p3: { down: true } });
+  assert.ok(pOff.hp < pOff.maxHp, "Touching ground outside base deals proportional impact damage");
 });

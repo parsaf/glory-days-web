@@ -49,11 +49,11 @@ flowchart LR
 ```
 
 ### Class 1: Attack & Transport Helicopter (*"Yelling Dog / Huey"*)
-* **Flight Model:** *Choplifter*-style 2D arcade physics. Full hover capability, vertical takeoff/landing anywhere, can fly backward or flip horizontal facing direction (`Left`/`Right` thrust & tilt), pitches forward/backward proportionally to horizontal velocity.
+* **Flight Model:** *Choplifter*-style 2D arcade physics. Vertical takeoff/landing anywhere, can fly backward or flip horizontal facing direction (`Left`/`Right` thrust & tilt), pitches nose-down proportionally to forward horizontal speed. When hovering hands-off with no vertical input (`Up`/`Down`), gravity gently pulls the helicopter downward (`~24 u/s` sink rate) until it lands.
 * **Stats:** `350 HP` | Max Speed: `280 u/s` | Cabin Capacity: **8 Passengers** (Infantry or Civilians).
 * **Weapons & Loadout:**
-  * **Primary (`A`):** Gimbaled Nose Autocannon aimed forward-downward (`~20°–25°`). Uses the **Burst-Fire Reservoir** mechanic. Effective against infantry, light vehicles, and enemy aircraft.
-  * **Secondary (`S`):** **12x Unguided Bombs / Anti-Armor Rockets** (finite capacity; high single-target damage vs. tanks, howitzers, and bunkers).
+  * **Primary (`A`):** Forward Cockpit Autocannon aimed straight ahead (`0°` relative to nose, firing along the helicopter's current pitch angle). Uses the **Burst-Fire Reservoir** mechanic. Effective against infantry, light vehicles, and enemy aircraft.
+  * **Secondary (`S`):** **12x Free-Drop Gravity Bombs** (finite capacity; drops straight downward with **100% of the helicopter's current `(vx, vy)` momentum** so pilots can aim straight down while hovering or lead targets while flying forward).
   * **Countermeasure (`Z`):** **4x Flares** (finite capacity; spoofs incoming ground AA SAMs).
 * **Transport & Rescue Utility (`E`):**
   * **Airborne (`E`):** Drops 1 loaded friendly Infantry as a **Paratrooper** with a parachute directly onto bunkers or behind enemy lines.
@@ -61,10 +61,11 @@ flowchart LR
   * **Civilian Rescue:** Landing or hovering low (`<15m`) near stranded Civilians automatically boards them into available cabin slots; touching down at Base unloads them for team cash.
 
 ### Class 2: Prop Fighter Plane (*"P-47 Thunderbolt"*)
-* **Flight Model:** Highly maneuverable WWII/Cold-War heavy prop fighter replacing the supersonic jet. Features tight loop/turn radius, responsive elevator pitch control, forgiving stall speed (`120 u/s`), and snappy dive-recovery handling. Takes off and lands along the Base Runway.
+* **Flight Model:** Highly maneuverable WWII/Cold-War heavy prop fighter replacing the supersonic jet. Takes off and lands along the Base Runway.
+  * **Throttle & Pitch Separation:** **`Left` / `Right` Arrows** control forward thrust/velocity (and trigger wide U-turns when reversed); **`Up` / `Down` Arrows** only change nose pitch and vertical direction without accelerating or braking the plane's scalar airspeed. Releasing `Left`/`Right` causes air drag deceleration (`135 u/s²`), and dropping below stall speed (`195 u/s`) causes lift to drop off so gravity pulls the plane into a stall fall.
   * **Gentle Sine-Wave Vertical Cruise:** The P-47 cannot fly in a dead-flat horizontal line; while traversing the map horizontally, aerodynamic trim imparts a subtle, shallow-amplitude, long-wavelength vertical sine-wave oscillation ($y_{\text{osc}}(t) = A \sin(\omega t)$ with wide distance between peaks) paired with a gentle matching nose-pitch tangent oscillation ($\Delta \theta(t)$) so the plane smoothly rises and dips across long stretches.
   * **Wide U-Turn Momentum:** Reversing horizontal direction executes a wide banking U-turn (`0.8s` duration) where horizontal velocity follows $v_x(p) = v_{\text{cruise}} \cdot \cos(\pi p)$ for $p \in [0, 1]$, carrying forward travel into the bank (`p = 0 → 0.5`), pivoting through the 90° wing-over apex (`p = 0.5`), and accelerating smoothly into the opposite direction (`p = 0.5 → 1.0`).
-* **Stats:** `300 HP` | Cruise/Max Speed: `460 u/s` (Boost/Dive up to `580 u/s`) | Cabin Capacity: **0**.
+* **Stats:** `300 HP` | Cruise/Max Speed: `420 / 540 u/s` | Stall Speed: `195 u/s` | Cabin Capacity: **0**.
 * **Weapons & Loadout:**
   * **Primary (`A`):** Twin Wing-Mounted .50 Cal / 20mm Autocannons firing straight along the plane's nose vector. Uses the **Burst-Fire Reservoir** mechanic. High DPS for dogfighting and strafing.
   * **Secondary (`S`):** **8x Unified Straight-Trajectory Fuel-Limited Missiles/Rockets** (finite capacity):
@@ -126,7 +127,7 @@ Pressing **`Q`** toggles the **Requisition / Purchase Menu** overlay above the T
   2. Restocks finite secondary rockets/bombs and flares (`1 unit per 0.5s`).
   3. Unloads any rescued civilians in the Helicopter cabin for immediate cash.
 * **No Automatic Modal:** Landing **never** hijacks the screen with an automatic swap/load popup. Players remain in control and press **`E`** to load/unload troops or **`Q` -> `0`** to switch aircraft whenever desired.
-* Crashing into terrain or slamming down too hard destroys the aircraft (`5s` respawn delay + `$100` team replacement cost).
+* **Proportional Ground & Hard-Landing Damage:** Touching ground outside the friendly airstrip deals immediate impact damage + continuous ground-scrape damage proportional to vertical speed and total plane momentum. Touching down too hard (`|vy| > 45 u/s` or steep pitch) on the friendly airstrip also deals damage proportional to impact severity and momentum, crashing the aircraft if HP reaches `0` (`3s`–`5s` respawn delay + `$100` team replacement cost).
 
 ---
 
