@@ -403,16 +403,17 @@
         <div class="topbar-left">
           <a href="/" class="lab-back">← Main Game</a>
           <strong style="font-size:12px;color:#fbbf24;letter-spacing:0.04em;">P-47 FLIGHT LAB</strong>
-          <button class="scen-btn active" data-scenario="cruise" type="button">Cruise Air</button>
-          <button class="scen-btn" data-scenario="stall" type="button">Stall &amp; Dive</button>
+          <button class="scen-btn active" data-scenario="stall" type="button">4-Stage Glide &amp; Descent</button>
+          <button class="scen-btn" data-scenario="cruise" type="button">Stage 1 Cruise</button>
+          <button class="scen-btn" data-scenario="brake" type="button">Brake &amp; Turnaround</button>
           <button class="scen-btn" data-scenario="bounce" type="button">Bounce Impact</button>
           <button class="scen-btn" data-scenario="crash" type="button">Crash Slide</button>
           <button class="scen-btn" data-scenario="runway" type="button">Runway Takeoff</button>
         </div>
 
         <div class="topbar-right">
-          <label class="gym-toggle" title="Maintain cruiseSpeed hands-free while tuning cruise & sine wave parameters">
-            <input id="opt-auto-throttle" type="checkbox" checked />
+          <label class="gym-toggle" title="Maintain full Stage 1 throttle hands-free at cruise/max speed">
+            <input id="opt-auto-throttle" type="checkbox" />
             <span>Auto-Throttle</span>
           </label>
           <label class="gym-toggle" title="Automatically respawn Stall, Bounce, and Crash scenarios after finishing">
@@ -437,15 +438,17 @@
 
         <div id="overlay-legend">
           <div class="legend-pill">
-            <span><span class="dot" style="background:#22c55e;"></span>Cruise Lift</span>
-            <span><span class="dot" style="background:#f59e0b;"></span>Stall Glide</span>
-            <span><span class="dot" style="background:#ef4444;"></span>Nose Dive</span>
+            <span><span class="dot" style="background:#22c55e;"></span>S1 Full Lift</span>
+            <span><span class="dot" style="background:#38bdf8;"></span>S2 Grace Lift</span>
+            <span><span class="dot" style="background:#f59e0b;"></span>S3 Slow Descent</span>
+            <span><span class="dot" style="background:#ef4444;"></span>S4 Fast Descent</span>
             <span><span class="dot" style="background:#22d3ee;"></span>Bounce</span>
             <span><span class="dot" style="background:#f97316;"></span>Crash Slide</span>
           </div>
           <div class="legend-pill" style="color:#cbd5e1;">
-            <span><span class="kbd">←</span><span class="kbd">→</span> Thrust / U-Turn</span>
-            <span><span class="kbd">↑</span><span class="kbd">↓</span> Pitch</span>
+            <span><span class="kbd">→</span> Throttle</span>
+            <span><span class="kbd">←</span> Tap/Hold Brake→Turn</span>
+            <span><span class="kbd">↑</span><span class="kbd">↓</span> Tilt / Counter</span>
             <span><span class="kbd">Space</span> Pause</span>
           </div>
         </div>
@@ -455,34 +458,33 @@
         <div class="tel-box">
           <div class="tel-head">
             <span>Speed Spectrum</span>
-            <strong id="spec-readout">420 / 540 px/s</strong>
+            <strong id="spec-readout">540 / 540 px/s</strong>
           </div>
           <div id="spec-track">
             <div id="spec-fill"></div>
-            <div id="pin-min-glide" class="spec-pin" style="background:#ef4444;"><span style="color:#fca5a5;">GLD</span></div>
+            <div id="pin-min-glide" class="spec-pin" style="background:#ef4444;"><span style="color:#fca5a5;">MIN</span></div>
             <div id="pin-takeoff" class="spec-pin" style="background:#38bdf8;"><span style="color:#bae6fd;top:9px;">T/O</span></div>
-            <div id="pin-stall" class="spec-pin" style="background:#f59e0b;"><span style="color:#fde68a;">STL</span></div>
-            <div id="pin-cruise" class="spec-pin" style="background:#22c55e;"><span style="color:#bbf7d0;top:9px;">CRS</span></div>
+            <div id="pin-cruise" class="spec-pin" style="background:#22c55e;"><span style="color:#bbf7d0;">CRS</span></div>
             <div id="spec-needle"></div>
           </div>
         </div>
 
         <div class="tel-box">
           <div class="tel-head">
-            <span>Wing Lift</span>
+            <span>Aerodynamic Lift</span>
             <strong id="lift-pct" style="color:#22c55e;">100%</strong>
           </div>
           <div class="bar-track"><div id="lift-fill" class="bar-fill" style="width:100%;background:#22c55e;"></div></div>
-          <div class="timer-label" id="tel-phase" style="color:#22c55e;font-weight:800;">CRUISE</div>
+          <div class="timer-label" id="tel-phase" style="color:#22c55e;font-weight:800;">STAGE 1 • FULL LIFT</div>
         </div>
 
         <div class="tel-box">
           <div class="timer-row">
-            <div class="timer-label"><span>Coast Delay</span><span id="coast-readout">0.00 / 0.20s</span></div>
+            <div class="timer-label"><span>Stage 2 Grace Lift</span><span id="coast-readout">0.00 / 1.10s</span></div>
             <div class="bar-track"><div id="coast-fill" class="bar-fill" style="background:#38bdf8;"></div></div>
           </div>
           <div class="timer-row">
-            <div class="timer-label"><span>Stall Glide Delay</span><span id="stall-readout">0.00 / 0.30s</span></div>
+            <div class="timer-label"><span>Stage 3 Slow Descent</span><span id="stall-readout">0.00 / 1.40s</span></div>
             <div class="bar-track"><div id="stall-fill" class="bar-fill" style="background:#f59e0b;"></div></div>
           </div>
         </div>
@@ -491,8 +493,8 @@
           <div class="metrics-grid">
             <div class="metric-cell"><span>PITCH</span><strong id="tel-pitch">0.0°</strong></div>
             <div class="metric-cell"><span>EFF. NOSE</span><strong id="tel-eff-pitch">0.0°</strong></div>
-            <div class="metric-cell"><span>VX / VY</span><strong id="tel-vxvy">420 / 0</strong></div>
-            <div class="metric-cell"><span>ALT / HP</span><strong id="tel-alt">320m • 300</strong></div>
+            <div class="metric-cell"><span>VX / VY</span><strong id="tel-vxvy">540 / 0</strong></div>
+            <div class="metric-cell"><span>ALT / HP</span><strong id="tel-alt">500m • 300</strong></div>
           </div>
         </div>
       </footer>
@@ -500,7 +502,7 @@
 
     <aside id="lab-dock" aria-label="P-47 Parameters">
       <div class="dock-header">
-        <strong style="font-size:12px;color:#fbbf24;letter-spacing:0.04em;">28 TUNABLE PARAMETERS</strong>
+        <strong id="dock-param-count" style="font-size:12px;color:#fbbf24;letter-spacing:0.04em;">P-47 TUNABLE PARAMETERS</strong>
         <span id="lab-net-status">STANDALONE LOCAL</span>
       </div>
 

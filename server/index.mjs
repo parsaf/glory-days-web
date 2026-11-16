@@ -7,8 +7,10 @@ import { AIRCRAFT_CONFIG, DT } from "../shared/constants.mjs";
 import {
   addPlayer,
   createInitialState,
+  handlePlayerRequisition,
   handlePlayerUtility,
   removePlayer,
+  resetMatch,
   spawnPlayerP47Test,
   stepSimulation,
   swapPlayerAircraft,
@@ -104,6 +106,33 @@ function decodeWsFrames(buffer) {
   }
 
   return { messages, remaining: buffer.subarray(offset) };
+}
+
+function persistP47ConfigToFile(config) {
+  try {
+    const constantsPath = path.join(SHARED_DIR, "constants.mjs");
+    const src = fs.readFileSync(constantsPath, "utf8");
+    const startToken = "  p47: {\n";
+    const endToken = "\n  }\n};";
+    const startIdx = src.indexOf(startToken);
+    if (startIdx === -1) return false;
+    const endIdx = src.indexOf(endToken, startIdx);
+    if (endIdx === -1) return false;
+
+    let block = src.slice(startIdx, endIdx + endToken.length);
+    for (const [key, val] of Object.entries(config)) {
+      if (typeof val !== "number" || !Number.isFinite(val)) continue;
+      const re = new RegExp(`^(\\s*${key}:\\s*)(-?\\d+(?:\\.\\d+)?)`, "m");
+      block = block.replace(re, `$1${val}`);
+    }
+    const nextSrc = src.slice(0, startIdx) + block + src.slice(endIdx + endToken.length);
+    if (nextSrc !== src) {
+      fs.writeFileSync(constantsPath, nextSrc, "utf8");
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function resolveStaticPath(urlPath) {
@@ -205,8 +234,15 @@ server.on("upgrade", (req, socket) => {
             handlePlayerUtility(state, playerId);
           } else if (cmd.type === "swapAircraft") {
             swapPlayerAircraft(state, playerId);
+          } else if (cmd.type === "requisition") {
+            handlePlayerRequisition(state, playerId, String(cmd.key), { targetX: cmd.targetX });
+          } else if (cmd.type === "restartMatch") {
+            resetMatch(state);
           } else if (cmd.type === "updateP47Config" && cmd.patch) {
             const config = updateP47Config(cmd.patch);
+            if (cmd.persist === true) {
+              persistP47ConfigToFile(config);
+            }
             const frame = encodeWsFrame(JSON.stringify({ type: "p47Config", config }));
             for (const c of clients.values()) {
               if (!c.socket.destroyed) c.socket.write(frame);

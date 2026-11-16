@@ -3,6 +3,7 @@ export class KeyboardInput {
   constructor(onAction) {
     this.keys = new Set();
     this.menuOpen = false;
+    this.b52Aiming = false;
     this.onAction = onAction;
 
     this._onKeyDown = (e) => {
@@ -28,9 +29,35 @@ export class KeyboardInput {
         return;
       }
 
+      if (e.code === "Escape") {
+        if (this.menuOpen || this.b52Aiming) {
+          this.menuOpen = false;
+          this.b52Aiming = false;
+          this.onAction({ type: "cancelMenu" });
+        }
+        return;
+      }
+
       if (e.code === "KeyQ") {
+        if (this.b52Aiming) {
+          this.b52Aiming = false;
+          this.menuOpen = false;
+          this.onAction({ type: "cancelMenu" });
+          return;
+        }
         this.menuOpen = !this.menuOpen;
         this.onAction({ type: "toggleMenu", open: this.menuOpen });
+        return;
+      }
+
+      if (this.b52Aiming && (e.code === "KeyS" || e.code === "Enter")) {
+        e.preventDefault();
+        this.onAction({ type: "confirmB52" });
+        return;
+      }
+
+      if (e.code === "KeyR") {
+        this.onAction({ type: "restartMatch" });
         return;
       }
 
@@ -39,9 +66,11 @@ export class KeyboardInput {
         return;
       }
 
-      if (this.menuOpen && e.code.startsWith("Digit")) {
-        const digit = e.code.slice(5);
-        this.onAction({ type: "menuKey", key: digit });
+      if (this.menuOpen && (e.code.startsWith("Digit") || e.code.startsWith("Numpad"))) {
+        const digit = e.code.replace("Digit", "").replace("Numpad", "");
+        if (/^[0-9]$/.test(digit)) {
+          this.onAction({ type: "menuKey", key: digit });
+        }
       }
     };
 
@@ -58,14 +87,18 @@ export class KeyboardInput {
     window.addEventListener("blur", this._onBlur);
   }
 
+  isRawKeyDown(code) {
+    return this.keys.has(code);
+  }
+
   getSnapshot() {
     return {
-      left: this.keys.has("ArrowLeft"),
-      right: this.keys.has("ArrowRight"),
+      left: this.b52Aiming ? false : this.keys.has("ArrowLeft"),
+      right: this.b52Aiming ? false : this.keys.has("ArrowRight"),
       up: this.keys.has("ArrowUp"),
       down: this.keys.has("ArrowDown"),
       firePrimary: this.keys.has("KeyA"),
-      fireSecondary: this.keys.has("KeyS"),
+      fireSecondary: this.b52Aiming ? false : this.keys.has("KeyS"),
       fireFlare: this.keys.has("KeyZ")
     };
   }

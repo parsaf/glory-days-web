@@ -16,7 +16,7 @@ import {
 import { KeyboardInput } from "./input.mjs";
 import { SpriteBattlefieldRenderer } from "./renderer.mjs";
 
-const STORAGE_KEY = "glory_days_p47_config";
+const STORAGE_KEY = "glory_days_p47_config_v2";
 const PLAYER_ID = "lab_pilot";
 
 function clamp(v, lo, hi) {
@@ -34,10 +34,10 @@ try {
   // Ignore invalid local storage
 }
 
-const state = createInitialState({ includePracticeTargets: true });
+const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
 addPlayer(state, PLAYER_ID, "allied", "p47");
 
-let activeScenario = "cruise";
+let activeScenario = "stall";
 let loopCooldown = 0;
 let ws = null;
 let wsConnected = false;
@@ -45,6 +45,7 @@ let simSpeedBeforePause = 1;
 
 // DOM references
 const elNetStatus = document.getElementById("lab-net-status");
+const elParamCount = document.getElementById("dock-param-count");
 const elGroups = document.getElementById("lab-groups");
 const elAutoThrottle = document.getElementById("opt-auto-throttle");
 const elAutoLoop = document.getElementById("opt-auto-loop");
@@ -58,7 +59,6 @@ const elSpecFill = document.getElementById("spec-fill");
 const elSpecNeedle = document.getElementById("spec-needle");
 const elPinMinGlide = document.getElementById("pin-min-glide");
 const elPinTakeoff = document.getElementById("pin-takeoff");
-const elPinStall = document.getElementById("pin-stall");
 const elPinCruise = document.getElementById("pin-cruise");
 const elLiftPct = document.getElementById("lift-pct");
 const elLiftFill = document.getElementById("lift-fill");
@@ -88,9 +88,9 @@ function saveConfigLocally() {
   }
 }
 
-function syncWsConfig(patch) {
+function syncWsConfig(patch, persist = false) {
   if (wsConnected && ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "updateP47Config", patch }));
+    ws.send(JSON.stringify({ type: "updateP47Config", patch, persist }));
   }
 }
 
@@ -103,7 +103,7 @@ function startScenario(mode, snapCamera = true) {
     btn.blur();
   }
 
-  // Cruise runs hands-free at cruiseSpeed; other scenarios release throttle naturally unless user holds arrows
+  // Only "cruise" locks Auto-Throttle ON for hands-free Stage 1 wave tuning; other modes let user see off-throttle behavior immediately
   elAutoThrottle.checked = mode === "cruise";
   const simMode = mode === "cruise" ? "air" : mode;
   spawnPlayerP47Test(state, PLAYER_ID, simMode);
@@ -116,42 +116,69 @@ function startScenario(mode, snapCamera = true) {
   }
 }
 
+function computeStageLift(p, cfg = AIRCRAFT_CONFIG.p47) {
+  const stage = p.flightStage || 1;
+  if (stage === 1) return 1;
+  if (stage === 2) {
+    const graceDur = Math.max(0.05, cfg.throttleReleaseDelay);
+    const ratio = clamp((p.throttleOffTime || 0) / graceDur, 0, 1);
+    return 1 - ratio * 0.65;
+  }
+  return 0;
+}
+
 function adaptLiveAircraftToParam(key, val) {
   const p = state.players[PLAYER_ID];
   if (!p || !p.alive || p.crashing) return;
   const cfg = AIRCRAFT_CONFIG.p47;
-  const stallRange = Math.max(1, cfg.stallSpeed - cfg.minGlideSpeed);
 
-  if (key === "cruiseSpeed" && (elAutoThrottle.checked || activeScenario === "cruise")) {
+  if (key === "cruiseSpeed" && (elAutoThrottle.checked || activeScenario === "cruise" || activeScenario === "brake")) {
     p.speed = clamp(val, 0, cfg.maxSpeed);
-    const ep = p.effectivePitch ?? p.pitch ?? 0;
-    p.vx = p.dir * p.speed * Math.cos(ep);
-    p.vy = p.speed * Math.sin(ep);
   } else if (key === "maxSpeed" && p.speed > val) {
     p.speed = val;
-    const ep = p.effectivePitch ?? p.pitch ?? 0;
-    p.vx = p.dir * p.speed * Math.cos(ep);
+  } else if (key === "minGlideSpeed" && p.speed < val && p.y > 1) {
+    p.speed = val;
   }
 
-  const lift = clamp((p.speed - cfg.minGlideSpeed) / stallRange, 0, 1);
+  const stage = p.flightStage || 1;
+  const baseSnap = input.getSnapshot();
 
-  if ((key === "glidePitch" || key === "maxDivePitch") && lift < 1) {
-    const afterDelay = Math.max(0, (p.stallTime || 0) - cfg.stallGlideDelay);
-    const diveBlend = (p.stallTime || 0) < cfg.stallGlideDelay
-      ? 0
-      : clamp(afterDelay / 0.45, 0, 1) * (1 - lift);
-    const targetDivePitch = cfg.glidePitch + (cfg.maxDivePitch - cfg.glidePitch) * diveBlend;
-    p.pitch = targetDivePitch;
-  } else if (key === "maxPitch") {
+  if (stage === 3) {
+    if (baseSnap.up) p.pitch = cfg.stage3UpPitch;
+    else if (!baseSnap.down) p.pitch = cfg.glidePitch;
+    p.effectivePitch = clamp(p.pitch, -cfg.maxPitch, cfg.maxPitch);
+    const extraDown = p.pitch < cfg.glidePitch ? (cfg.glidePitch - p.pitch) * p.speed * 0.6 : 0;
+    p.stallVy = cfg.stallSinkGravity + extraDown;
+    if (p.y > 0.5 && p.turnTimer === 0) {
+      p.vx = p.dir * p.speed * Math.cos(p.effectivePitch);
+      p.vy = -p.stallVy;
+    }
+    return;
+  }
+
+  if (stage === 4) {
+    const targetDown = cfg.maxDivePitch;
+    if (baseSnap.up) p.pitch = cfg.stage4UpPitch;
+    else p.pitch = targetDown;
+    p.effectivePitch = clamp(p.pitch, Math.min(-cfg.maxPitch, targetDown), cfg.maxPitch);
+    p.stallVy = cfg.stage4SinkRate;
+    if (p.y > 0.5 && p.turnTimer === 0) {
+      p.vx = p.dir * p.speed * Math.cos(p.effectivePitch);
+      p.vy = -p.stallVy;
+    }
+    return;
+  }
+
+  if (key === "maxPitch") {
     p.pitch = clamp(p.pitch, -val, val);
   }
 
-  // Recompute wave / pitch kinematics immediately so canvas updates even when paused
-  const waveVelY = Math.cos(p.wavePhase || 0) * cfg.sineAmpVel * lift;
-  const wavePitch = Math.cos(p.wavePhase || 0) * cfg.sinePitchAmp * lift;
-  const minClampPitch = Math.min(-cfg.maxPitch, cfg.maxDivePitch);
-  p.stallVy = (1 - lift) * cfg.stallSinkGravity;
-  p.effectivePitch = clamp(p.pitch + wavePitch, minClampPitch, cfg.maxPitch);
+  // Stage 1 / Stage 2 immediate kinematics update even when paused
+  const graceLift = stage === 2 ? 1 - clamp((p.throttleOffTime || 0) / Math.max(0.05, cfg.throttleReleaseDelay), 0, 1) * 0.35 : 1;
+  const waveVelY = Math.cos(p.wavePhase || 0) * cfg.sineAmpVel * graceLift;
+  const wavePitch = Math.cos(p.wavePhase || 0) * cfg.sinePitchAmp * graceLift;
+  p.stallVy = stage === 2 ? Math.pow(clamp((p.throttleOffTime || 0) / Math.max(0.05, cfg.throttleReleaseDelay), 0, 1), 2) * cfg.stallSinkGravity * 0.45 : 0;
+  p.effectivePitch = clamp(p.pitch + wavePitch, -cfg.maxPitch, cfg.maxPitch);
   if (p.y > 0.5 && p.turnTimer === 0) {
     p.vx = p.dir * p.speed * Math.cos(p.effectivePitch);
     p.vy = p.speed * Math.sin(p.effectivePitch) + waveVelY - p.stallVy;
@@ -270,6 +297,9 @@ function buildControls() {
     section.appendChild(list);
     elGroups.appendChild(section);
   }
+  if (elParamCount) {
+    elParamCount.textContent = `${controls.size} TUNABLE PARAMETERS`;
+  }
 }
 
 // Scenario buttons & dock actions
@@ -294,7 +324,7 @@ elSaveBtn.addEventListener("click", () => {
       fullPatch[item.key] = AIRCRAFT_CONFIG.p47[item.key];
     }
   }
-  syncWsConfig(fullPatch);
+  syncWsConfig(fullPatch, true);
   elSaveBtn.textContent = "Saved!";
   setTimeout(() => { elSaveBtn.textContent = "Save Config"; }, 1200);
   elSaveBtn.blur();
@@ -375,21 +405,11 @@ function connectConfigBridge() {
 
 function buildEffectiveInput(player, baseSnap) {
   const effective = { ...baseSnap };
-  const cfg = AIRCRAFT_CONFIG.p47;
-  if (elAutoThrottle.checked && !effective.left && !effective.right && player.alive && !player.crashing && player.turnTimer === 0 && player.speed <= cfg.cruiseSpeed + 0.5) {
+  if (elAutoThrottle.checked && !effective.left && !effective.right && player.alive && !player.crashing && player.turnTimer === 0) {
     if (player.dir > 0) effective.right = true;
     else effective.left = true;
   }
   return effective;
-}
-
-function stabilizeAutoThrottle(player, baseSnap, startedAtOrBelowCruise) {
-  const cfg = AIRCRAFT_CONFIG.p47;
-  if (elAutoThrottle.checked && !baseSnap.left && !baseSnap.right && player.alive && !player.crashing && player.turnTimer === 0 && startedAtOrBelowCruise && player.speed > cfg.cruiseSpeed) {
-    player.speed = cfg.cruiseSpeed;
-    const ep = player.effectivePitch ?? player.pitch ?? 0;
-    player.vx = player.dir * player.speed * Math.cos(ep);
-  }
 }
 
 function renderPhysicsOverlay(ctx, player, baseSnap) {
@@ -425,10 +445,11 @@ function renderPhysicsOverlay(ctx, player, baseSnap) {
     ctx.restore();
   };
 
-  drawRay(0, "rgba(148, 163, 184, 0.45)", true, 1, "0°");
-  drawRay(cfg.maxPitch, "rgba(56, 189, 248, 0.45)", true, 1, `+${Math.round((cfg.maxPitch * 180) / Math.PI)}°`);
-  drawRay(cfg.glidePitch, "rgba(245, 158, 11, 0.7)", true, 1.2, "GLD");
-  drawRay(cfg.maxDivePitch, "rgba(239, 68, 68, 0.7)", true, 1.2, "DIVE");
+  drawRay(0, "rgba(148, 163, 184, 0.55)", true, 1, "0° (S4↑)");
+  drawRay(cfg.maxPitch, "rgba(56, 189, 248, 0.4)", true, 1, `+${Math.round((cfg.maxPitch * 180) / Math.PI)}°`);
+  drawRay(cfg.stage3UpPitch, "rgba(34, 197, 94, 0.65)", true, 1.1, "S3↑");
+  drawRay(cfg.glidePitch, "rgba(245, 158, 11, 0.75)", true, 1.2, "S3↓");
+  drawRay(cfg.maxDivePitch, "rgba(239, 68, 68, 0.75)", true, 1.2, "S4/↓");
 
   const effPitch = player.effectivePitch ?? player.pitch ?? 0;
   drawRay(effPitch, "#f8fafc", false, 2);
@@ -441,11 +462,14 @@ function renderPhysicsOverlay(ctx, player, baseSnap) {
     events: [],
     targets: [],
     paratroopers: [],
+    units: [],
+    civilians: [],
     teamFunds: { ...state.teamFunds },
     players: { [simPlayer.id]: simPlayer }
   };
 
-  const points = [{ x: simPlayer.x, y: simPlayer.y, cat: simPlayer.crashing ? "crash" : "cruise", marker: null }];
+  const initialCat = simPlayer.crashing ? "crash" : `stage${simPlayer.flightStage || 1}`;
+  const points = [{ x: simPlayer.x, y: simPlayer.y, cat: initialCat, marker: null }];
   let bouncedFlag = false;
 
   for (let i = 1; i <= 150; i++) {
@@ -457,10 +481,8 @@ function renderPhysicsOverlay(ctx, player, baseSnap) {
     if (simPlayer.crashing) {
       updateCrashSlide(simState, simPlayer, DT);
     } else {
-      const belowOrAtCruise = simPlayer.speed <= cfg.cruiseSpeed + 0.5;
       const predInput = buildEffectiveInput(simPlayer, baseSnap);
       updateP47(simState, simPlayer, predInput, DT);
-      stabilizeAutoThrottle(simPlayer, baseSnap, belowOrAtCruise);
     }
 
     const bouncedNow = simState.events.some((ev) => ev.type === "hard_landing" && ev.bounced);
@@ -470,13 +492,9 @@ function renderPhysicsOverlay(ctx, player, baseSnap) {
       if (simPlayer.vy < -15) bouncedFlag = false;
     }
 
-    const stallRange = Math.max(1, cfg.stallSpeed - cfg.minGlideSpeed);
-    const lift = clamp((simPlayer.speed - cfg.minGlideSpeed) / stallRange, 0, 1);
-
-    let cat = "cruise";
+    let cat = `stage${simPlayer.flightStage || 1}`;
     if (simPlayer.crashing || crashNow) cat = "crash";
     else if (bouncedFlag && simPlayer.vy > -10) cat = "bounce";
-    else if (lift < 0.99) cat = (simPlayer.stallTime || 0) < cfg.stallGlideDelay ? "glide" : "dive";
 
     points.push({
       x: simPlayer.x,
@@ -487,9 +505,10 @@ function renderPhysicsOverlay(ctx, player, baseSnap) {
   }
 
   const colorMap = {
-    cruise: "#22c55e",
-    glide: "#f59e0b",
-    dive: "#ef4444",
+    stage1: "#22c55e",
+    stage2: "#38bdf8",
+    stage3: "#f59e0b",
+    stage4: "#ef4444",
     bounce: "#22d3ee",
     crash: "#f97316"
   };
@@ -505,7 +524,7 @@ function renderPhysicsOverlay(ctx, player, baseSnap) {
     ctx.stroke();
 
     if (points[i].marker === "tick") {
-      ctx.fillStyle = colorMap[points[i].cat];
+      ctx.fillStyle = colorMap[points[i].cat] || "#22c55e";
       ctx.beginPath();
       ctx.arc(b.sx, b.sy, 3, 0, Math.PI * 2);
       ctx.fill();
@@ -532,7 +551,7 @@ function renderPhysicsOverlay(ctx, player, baseSnap) {
 function updateTelemetry(player) {
   if (!player) return;
   const cfg = AIRCRAFT_CONFIG.p47;
-  const topScale = Math.max(cfg.maxSpeed, cfg.cruiseSpeed, cfg.stallSpeed, 100);
+  const topScale = Math.max(cfg.maxSpeed, cfg.cruiseSpeed, cfg.minGlideSpeed, 100);
   const pct = (v) => `${clamp((v / topScale) * 100, 0, 100).toFixed(2)}%`;
 
   elSpecReadout.textContent = `${Math.round(player.speed)} / ${Math.round(cfg.maxSpeed)} px/s`;
@@ -540,21 +559,20 @@ function updateTelemetry(player) {
   elSpecNeedle.style.left = pct(player.speed);
   elPinMinGlide.style.left = pct(cfg.minGlideSpeed);
   elPinTakeoff.style.left = pct(cfg.takeoffSpeed);
-  elPinStall.style.left = pct(cfg.stallSpeed);
   elPinCruise.style.left = pct(cfg.cruiseSpeed);
 
-  const stallRange = Math.max(1, cfg.stallSpeed - cfg.minGlideSpeed);
-  const lift = clamp((player.speed - cfg.minGlideSpeed) / stallRange, 0, 1);
-  const liftColor = lift >= 0.99 ? "#22c55e" : lift > 0.25 ? "#f59e0b" : "#ef4444";
+  const stage = player.flightStage || 1;
+  const lift = computeStageLift(player, cfg);
+  const liftColor = stage === 1 ? "#22c55e" : stage === 2 ? "#38bdf8" : stage === 3 ? "#f59e0b" : "#ef4444";
   elLiftPct.textContent = `${Math.round(lift * 100)}%`;
   elLiftPct.style.color = liftColor;
   elLiftFill.style.width = `${lift * 100}%`;
   elLiftFill.style.background = liftColor;
 
-  let phase = "CRUISE";
+  let phase = "STAGE 1 • FULL LIFT";
   let phaseColor = "#22c55e";
   if (!player.alive) {
-    phase = `DESTROYED (RESPAWN)`;
+    phase = "DESTROYED (RESPAWN)";
     phaseColor = "#ef4444";
   } else if (player.crashing) {
     phase = `CRASH SLIDE (${player.crashSlideTicks}t)`;
@@ -565,22 +583,28 @@ function updateTelemetry(player) {
   } else if (player.turnTimer > 0) {
     phase = "WIDE U-TURN";
     phaseColor = "#a855f7";
-  } else if (lift < 1) {
-    phase = (player.stallTime || 0) < cfg.stallGlideDelay ? "STALL GLIDE" : "STALL NOSE-DIVE";
-    phaseColor = (player.stallTime || 0) < cfg.stallGlideDelay ? "#f59e0b" : "#ef4444";
+  } else if (stage === 2) {
+    phase = "STAGE 2 • GRACE LIFT";
+    phaseColor = "#38bdf8";
+  } else if (stage === 3) {
+    phase = "STAGE 3 • SLOW DESCENT";
+    phaseColor = "#f59e0b";
+  } else if (stage === 4) {
+    phase = "STAGE 4 • FAST DESCENT";
+    phaseColor = "#ef4444";
   }
   elPhase.textContent = phase;
   elPhase.style.color = phaseColor;
 
-  const coastDenom = Math.max(0.001, cfg.throttleReleaseDelay);
-  const coastVal = Math.min(cfg.throttleReleaseDelay, player.throttleOffTime || 0);
-  elCoastReadout.textContent = `${(player.throttleOffTime || 0).toFixed(2)} / ${cfg.throttleReleaseDelay.toFixed(2)}s`;
-  elCoastFill.style.width = `${clamp((coastVal / coastDenom) * 100, 0, 100)}%`;
+  const graceDur = Math.max(0.05, cfg.throttleReleaseDelay);
+  const graceVal = Math.min(graceDur, player.throttleOffTime || 0);
+  elCoastReadout.textContent = `${graceVal.toFixed(2)} / ${graceDur.toFixed(2)}s`;
+  elCoastFill.style.width = `${clamp((graceVal / graceDur) * 100, 0, 100)}%`;
 
-  const stallDenom = Math.max(0.001, cfg.stallGlideDelay);
-  const stallVal = Math.min(cfg.stallGlideDelay, player.stallTime || 0);
-  elStallReadout.textContent = `${(player.stallTime || 0).toFixed(2)} / ${cfg.stallGlideDelay.toFixed(2)}s`;
-  elStallFill.style.width = `${clamp((stallVal / stallDenom) * 100, 0, 100)}%`;
+  const stage3Dur = Math.max(0.05, cfg.stallGlideDelay);
+  const stage3Val = Math.min(stage3Dur, player.stallTime || 0);
+  elStallReadout.textContent = `${stage3Val.toFixed(2)} / ${stage3Dur.toFixed(2)}s`;
+  elStallFill.style.width = `${clamp((stage3Val / stage3Dur) * 100, 0, 100)}%`;
 
   const pitchDeg = ((player.pitch || 0) * 180) / Math.PI;
   const effPitchDeg = ((player.effectivePitch ?? player.pitch ?? 0) * 180) / Math.PI;
@@ -594,11 +618,13 @@ function handleAutoLoop(player, dt) {
   if (!elAutoLoop.checked || activeScenario === "cruise" || activeScenario === "runway") return;
   if (!player) return;
 
-  const settledStall = activeScenario === "stall" && !player.alive;
-  const settledCrash = activeScenario === "crash" && !player.alive;
-  const settledBounce = activeScenario === "bounce" && (!player.alive || (player.x > 650 && !player.crashing));
+  const groundedStop = player.y <= 0.1 && player.speed < 5 && !player.crashing;
+  const settledStall = activeScenario === "stall" && (!player.alive || groundedStop);
+  const settledBrake = activeScenario === "brake" && (!player.alive || groundedStop);
+  const settledCrash = activeScenario === "crash" && (!player.alive || groundedStop);
+  const settledBounce = activeScenario === "bounce" && (!player.alive || groundedStop || (player.x > 650 && !player.crashing));
 
-  if (settledStall || settledCrash || settledBounce) {
+  if (settledStall || settledBrake || settledCrash || settledBounce) {
     loopCooldown += dt;
     if (loopCooldown >= 0.75) {
       startScenario(activeScenario, true);
@@ -608,7 +634,7 @@ function handleAutoLoop(player, dt) {
 
 buildControls();
 await renderer.loadAll();
-startScenario("cruise", true);
+startScenario("stall", true);
 connectConfigBridge();
 
 let accumulator = 0;
@@ -626,10 +652,16 @@ function loop(now) {
   if (simScale > 0) {
     accumulator += scaledDt;
     while (accumulator >= DT) {
-      const belowOrAtCruise = player.speed <= AIRCRAFT_CONFIG.p47.cruiseSpeed + 0.5;
+      if (state.baseAa?.enemy) {
+        state.baseAa.enemy.flakCooldown = 999;
+        state.baseAa.enemy.samCooldown = 999;
+      }
+      if (state.baseAa?.allied) {
+        state.baseAa.allied.flakCooldown = 999;
+        state.baseAa.allied.samCooldown = 999;
+      }
       const effectiveInput = buildEffectiveInput(player, baseSnap);
       stepSimulation(state, { [PLAYER_ID]: effectiveInput });
-      stabilizeAutoThrottle(player, baseSnap, belowOrAtCruise);
       if (state.events.length) renderer.ingestEvents(state.events);
       handleAutoLoop(player, DT);
       accumulator -= DT;

@@ -178,7 +178,14 @@ export class SpriteBattlefieldRenderer {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     const focusPlayer = state.players[localPlayerId] || Object.values(state.players)[0];
-    this.updateCamera(focusPlayer, dt);
+    let camTarget = focusPlayer;
+    if (focusPlayer?.controllingV2Id) {
+      const v2 = (state.v2s || []).find((v) => v.id === focusPlayer.controllingV2Id && v.alive);
+      if (v2) {
+        camTarget = { x: v2.x, y: v2.y, vx: v2.vx, dir: v2.dir, aircraftType: "p47" };
+      }
+    }
+    this.updateCamera(camTarget, dt);
 
     // Keep ground visible cleanly near lower fifth while climbing
     const groundScreenY = Math.min(h - 54, Math.max(h * 0.72, h * 0.82 + (this.camY - 150) * 0.35 * this.camZoom));
@@ -239,6 +246,17 @@ export class SpriteBattlefieldRenderer {
 
       this.drawSprite("v2_silo", base.siloX, 0, RENDER_HEIGHTS.v2Silo, { team: side, flipX: side === "enemy" }, w, groundScreenY);
       this.drawSprite("base_hq", base.hqX, 0, RENDER_HEIGHTS.baseHq, { team: side, flipX: side === "enemy" }, w, groundScreenY);
+
+      const hq = state.hqs[side];
+      if (hq && hq.hp < hq.maxHp) {
+        const { sx, sy } = this.worldToScreen(base.hqX, RENDER_HEIGHTS.baseHq + 18, w, groundScreenY);
+        if (sx > -120 && sx < w + 120) {
+          ctx.fillStyle = "rgba(0,0,0,0.65)";
+          ctx.fillRect(sx - 44, sy, 88, 7);
+          ctx.fillStyle = side === "allied" ? "#3b82f6" : "#ef4444";
+          ctx.fillRect(sx - 44, sy, 88 * (hq.hp / hq.maxHp), 7);
+        }
+      }
     }
 
     // 4. Bunkers (Checkpoints)
@@ -246,29 +264,89 @@ export class SpriteBattlefieldRenderer {
       this.drawSprite("bunker", b.x, 0, RENDER_HEIGHTS.bunker, { team: b.owner === "enemy" ? "enemy" : "allied" }, w, groundScreenY);
       const { sx, sy } = this.worldToScreen(b.x, RENDER_HEIGHTS.bunker + 14, w, groundScreenY);
       if (sx > -100 && sx < w + 100) {
-        ctx.fillStyle = b.owner === "allied" ? "#3b82f6" : b.owner === "enemy" ? "#ef4444" : "#94a3b8";
+        const label = b.hp <= 0 ? "NEUTRALIZED" : b.owner.toUpperCase();
+        ctx.fillStyle = b.hp <= 0 ? "#f59e0b" : b.owner === "allied" ? "#3b82f6" : b.owner === "enemy" ? "#ef4444" : "#94a3b8";
         ctx.font = "700 10px ui-sans-serif, system-ui, sans-serif";
         ctx.textAlign = "center";
-        ctx.fillText(b.owner.toUpperCase(), sx, sy);
+        ctx.fillText(label, sx, sy);
         ctx.textAlign = "left";
+        if (b.hp < b.maxHp && b.hp > 0) {
+          ctx.fillStyle = "rgba(0,0,0,0.55)";
+          ctx.fillRect(sx - 28, sy + 5, 56, 4);
+          ctx.fillStyle = b.owner === "allied" ? "#3b82f6" : b.owner === "enemy" ? "#ef4444" : "#94a3b8";
+          ctx.fillRect(sx - 28, sy + 5, 56 * (b.hp / b.maxHp), 4);
+        }
       }
     }
 
-    // 5. Practice Ground Targets
+    // 4b. Stranded Civilians
+    for (const civ of state.civilians || []) {
+      let key = Math.floor(civ.animPhase) % 2 === 0 ? "civ_wave_1" : "civ_wave_2";
+      let targetH = RENDER_HEIGHTS.civilianFlare;
+      if (civ.state === "turn") {
+        key = "civ_turn";
+        targetH = RENDER_HEIGHTS.civilian;
+      } else if (civ.state === "run") {
+        const frame = (Math.floor(civ.animPhase * 1.6) % 3) + 1;
+        key = `civ_run_${frame}`;
+        targetH = RENDER_HEIGHTS.civilian;
+      }
+      this.drawSprite(key, civ.x, civ.y || 0, targetH, { team: "allied", flipX: civ.dir < 0 }, w, groundScreenY);
+    }
+
+    // 5. Practice Ground Targets & RTS Ground Units
+    const unitHeightMap = {
+      infantry: RENDER_HEIGHTS.infantry,
+      aa_flak_truck: RENDER_HEIGHTS.aaTruck,
+      armored_apc: RENDER_HEIGHTS.apc,
+      main_battle_tank: RENDER_HEIGHTS.mbt,
+      self_propelled_howitzer: RENDER_HEIGHTS.howitzer,
+      ambulance: RENDER_HEIGHTS.ambulance,
+      supply_truck: RENDER_HEIGHTS.supplyTruck
+    };
+
     for (const t of state.targets) {
       if (t.hp <= 0) continue;
-      const hMap = {
-        main_battle_tank: RENDER_HEIGHTS.mbt,
-        self_propelled_howitzer: RENDER_HEIGHTS.howitzer,
-        aa_flak_truck: RENDER_HEIGHTS.aaTruck
-      };
-      this.drawSprite(t.kind, t.x, 0, hMap[t.kind] || 48, { team: t.team, flipX: t.dir < 0 }, w, groundScreenY);
-      const { sx, sy } = this.worldToScreen(t.x, (hMap[t.kind] || 48) + 12, w, groundScreenY);
+      const th = unitHeightMap[t.kind] || 48;
+      this.drawSprite(t.kind, t.x, 0, th, { team: t.team, flipX: t.dir < 0 }, w, groundScreenY);
+      const { sx, sy } = this.worldToScreen(t.x, th + 12, w, groundScreenY);
       if (sx > -80 && sx < w + 80) {
         ctx.fillStyle = "rgba(0,0,0,0.55)";
         ctx.fillRect(sx - 24, sy, 48, 5);
         ctx.fillStyle = "#ef4444";
         ctx.fillRect(sx - 24, sy, 48 * (t.hp / t.maxHp), 5);
+      }
+    }
+
+    for (const u of state.units || []) {
+      if (u.hp <= 0) continue;
+      const uh = unitHeightMap[u.kind] || 48;
+      if (u.kind === "supply_truck") {
+        const { sx } = this.worldToScreen(u.x, 0, w, groundScreenY);
+        const auraR = 240 * this.camZoom;
+        if (sx > -auraR && sx < w + auraR) {
+          ctx.fillStyle = "rgba(34, 197, 94, 0.12)";
+          ctx.fillRect(sx - auraR, groundScreenY - 6 * this.camZoom, auraR * 2, 10 * this.camZoom);
+        }
+      }
+      const spriteKey = u.kind === "infantry"
+        ? `inf_run_${(Math.floor(u.walkPhase || 0) % 4) + 1}`
+        : u.kind;
+      this.drawSprite(spriteKey, u.x, u.y || 0, uh, { team: u.team, flipX: u.dir < 0 }, w, groundScreenY);
+      const { sx, sy } = this.worldToScreen(u.x, uh + 10, w, groundScreenY);
+      if (sx > -80 && sx < w + 80) {
+        const barW = u.kind === "infantry" ? 24 : 46;
+        ctx.fillStyle = "rgba(0,0,0,0.55)";
+        ctx.fillRect(sx - barW * 0.5, sy, barW, 4);
+        ctx.fillStyle = u.team === "allied" ? "#3b82f6" : "#ef4444";
+        ctx.fillRect(sx - barW * 0.5, sy, barW * (u.hp / u.maxHp), 4);
+        if (u.kind === "ambulance" && u.passengers?.length > 0) {
+          ctx.fillStyle = "#fde047";
+          ctx.font = "800 10px ui-sans-serif, system-ui, sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText(`+${u.passengers.length} CIV`, sx, sy - 4);
+          ctx.textAlign = "left";
+        }
       }
     }
 
@@ -315,6 +393,34 @@ export class SpriteBattlefieldRenderer {
       );
     }
 
+    // 7b. Strategic B-52 Bombers & Steerable V2 Missiles
+    for (const b52 of state.b52s || []) {
+      if (!b52.alive) continue;
+      this.drawSprite("b52_bomber", b52.x, b52.y, RENDER_HEIGHTS.b52, { team: b52.team, flipX: b52.dir < 0, anchorBottom: false }, w, groundScreenY);
+      const { sx, sy } = this.worldToScreen(b52.x, b52.y + 58, w, groundScreenY);
+      if (sx > -140 && sx < w + 140) {
+        ctx.fillStyle = "rgba(0,0,0,0.6)";
+        ctx.fillRect(sx - 40, sy, 80, 5);
+        ctx.fillStyle = b52.team === "allied" ? "#3b82f6" : "#ef4444";
+        ctx.fillRect(sx - 40, sy, 80 * (b52.hp / b52.maxHp), 5);
+      }
+    }
+
+    for (const v2 of state.v2s || []) {
+      if (!v2.alive) continue;
+      this.smokeTrail.push({ x: v2.x, y: v2.y, r: 5.5, life: 0.45, maxLife: 0.45, color: "#cbd5e1" });
+      const { sx, sy } = this.worldToScreen(v2.x, v2.y, w, groundScreenY);
+      const img = v2.team === "enemy" ? this.getEnemyCanvas("v2_missile") : this.sprites.get("v2_missile");
+      const ang = Math.atan2(-v2.vy, v2.vx);
+      if (img) {
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(ang);
+        ctx.drawImage(img, -24 * this.camZoom, -7 * this.camZoom, 48 * this.camZoom, 14 * this.camZoom);
+        ctx.restore();
+      }
+    }
+
     // 8. Projectiles & Smoke Trail (P-47 missile cuts smoke after 4,000m fuel burnout!)
     for (const pr of state.projectiles) {
       const { sx, sy } = this.worldToScreen(pr.x, pr.y, w, groundScreenY);
@@ -325,9 +431,23 @@ export class SpriteBattlefieldRenderer {
         ctx.moveTo(sx, sy);
         ctx.lineTo(sx - pr.vx * 0.018 * this.camZoom, sy + pr.vy * 0.018 * this.camZoom);
         ctx.stroke();
-      } else if (pr.kind === "p47_missile") {
+      } else if (pr.kind === "flak_shell") {
+        ctx.strokeStyle = "#fb7185";
+        ctx.lineWidth = Math.max(2, 3 * this.camZoom);
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(sx - pr.vx * 0.02 * this.camZoom, sy + pr.vy * 0.02 * this.camZoom);
+        ctx.stroke();
+      } else if (pr.kind === "p47_missile" || pr.kind === "sam_missile") {
         if (!pr.fuelBurnedOut) {
-          this.smokeTrail.push({ x: pr.x, y: pr.y, r: 4.5, life: 0.35, maxLife: 0.35, color: "#e2e8f0" });
+          this.smokeTrail.push({
+            x: pr.x,
+            y: pr.y,
+            r: pr.kind === "sam_missile" ? 3.8 : 4.5,
+            life: 0.35,
+            maxLife: 0.35,
+            color: pr.kind === "sam_missile" ? "#fecaca" : "#e2e8f0"
+          });
         }
         const img = this.sprites.get("v2_missile");
         const ang = Math.atan2(-pr.vy, pr.vx);
@@ -338,6 +458,24 @@ export class SpriteBattlefieldRenderer {
           ctx.drawImage(img, -18 * this.camZoom, -5 * this.camZoom, 36 * this.camZoom, 10 * this.camZoom);
           ctx.restore();
         }
+      } else if (pr.kind === "tank_shell") {
+        ctx.fillStyle = "#fbbf24";
+        ctx.beginPath();
+        ctx.arc(sx, sy, 3.5 * this.camZoom, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (pr.kind === "howitzer_shell") {
+        this.smokeTrail.push({ x: pr.x, y: pr.y, r: 3.5, life: 0.25, maxLife: 0.25, color: "#fed7aa" });
+        ctx.fillStyle = "#f97316";
+        ctx.beginPath();
+        ctx.arc(sx, sy, 4.5 * this.camZoom, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (pr.kind === "b52_bomb") {
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(Math.atan2(-pr.vy, pr.vx));
+        ctx.fillStyle = "#cbd5e1";
+        ctx.fillRect(-5 * this.camZoom, -2.5 * this.camZoom, 10 * this.camZoom, 5 * this.camZoom);
+        ctx.restore();
       } else if (pr.kind === "heli_bomb") {
         ctx.fillStyle = "#f8fafc";
         ctx.beginPath();
