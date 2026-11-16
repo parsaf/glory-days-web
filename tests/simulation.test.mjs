@@ -420,3 +420,54 @@ test("Dev P-47 config tuning, delay parameters (throttleReleaseDelay, stallGlide
     assert.equal(resetCfg.cruiseSpeed, 420);
   }
 });
+
+test("Flight Lab scenarios (stall, bounce, crash) and smooth wavePhase integration work seamlessly", () => {
+  try {
+    const state = createInitialState({ includePracticeTargets: true });
+    const p1 = addPlayer(state, "p1", "allied", "heli");
+
+    // 1. Stall scenario spawns just above stallSpeed at high altitude and enters stall dive hands-free
+    assert.equal(spawnPlayerP47Test(state, "p1", "stall"), true);
+    assert.equal(p1.aircraftType, "p47");
+    assert.ok(p1.y >= 400);
+    for (let t = 0; t < 120; t++) stepSimulation(state, { p1: {} });
+    assert.ok(p1.speed < AIRCRAFT_CONFIG.p47.stallSpeed, "Stall scenario bleeds below stallSpeed");
+    assert.ok(p1.pitch < -0.25, "Stall scenario enters dive pitch");
+
+    // 2. Bounce scenario hits ground hard enough to damage + rebound into air
+    assert.equal(spawnPlayerP47Test(state, "p1", "bounce"), true);
+    let bounced = false;
+    for (let t = 0; t < 60; t++) {
+      stepSimulation(state, { p1: {} });
+      if (state.events.some((e) => e.type === "hard_landing" && e.bounced)) {
+        bounced = true;
+        break;
+      }
+    }
+    assert.equal(bounced, true, "Bounce scenario triggers survivable ground bounce");
+    assert.ok(p1.alive && p1.y > 0 && p1.vy > 20);
+
+    // 3. Crash scenario triggers fatal slide and destroys spawned target in path
+    assert.equal(spawnPlayerP47Test(state, "p1", "crash"), true);
+    const startTargets = state.targets.filter((t) => t.hp > 0).length;
+    let crashStarted = false;
+    for (let t = 0; t < 120; t++) {
+      stepSimulation(state, { p1: {} });
+      if (state.events.some((e) => e.type === "crash_slide_start")) crashStarted = true;
+    }
+    assert.equal(crashStarted, true, "Crash scenario enters fatal crash slide");
+    const remainingTargets = state.targets.filter((t) => t.hp > 0 && !t.respawnTimer).length;
+    assert.ok(remainingTargets < startTargets || state.targets.some((t) => t.hp === 0), "Crash slide hits target ahead");
+
+    // 4. Changing sineOmega mid-flight accumulates wavePhase incrementally with zero jump
+    assert.equal(spawnPlayerP47Test(state, "p1", "air"), true);
+    for (let t = 0; t < 60; t++) stepSimulation(state, { p1: { right: true } });
+    const phaseBefore = p1.wavePhase;
+    updateP47Config({ sineOmega: 2.4 });
+    stepSimulation(state, { p1: { right: true } });
+    const deltaPhase = p1.wavePhase - phaseBefore;
+    assert.ok(Math.abs(deltaPhase - 2.4 / 60) < 1e-6, "wavePhase advances smoothly without teleporting on live sineOmega edit");
+  } finally {
+    updateP47Config({ reset: true });
+  }
+});

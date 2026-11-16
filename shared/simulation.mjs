@@ -107,6 +107,7 @@ export function createPlayer(id, team = "allied", aircraftType = "heli") {
     turnStartDir: dir,
     turnStartSpeed: 0,
     airborneTime: 0,
+    wavePhase: 0,
     rotorPhase: 0,
     throttleOffTime: 0,
     stallTime: 0,
@@ -185,6 +186,7 @@ export function spawnPlayerP47Test(state, playerId, mode = "air") {
   player.pitch = 0;
   player.effectivePitch = 0;
   player.airborneTime = 0;
+  player.wavePhase = 0;
 
   if (mode === "runway") {
     player.x = base.padCenterX;
@@ -193,6 +195,70 @@ export function spawnPlayerP47Test(state, playerId, mode = "air") {
     player.vx = 0;
     player.vy = 0;
     player.landedAtBase = true;
+  } else if (mode === "stall") {
+    player.x = player.team === "allied" ? -1400 : 1400;
+    player.y = 430;
+    player.speed = cfg.stallSpeed + 12;
+    player.vx = dir * player.speed;
+    player.vy = 0;
+    player.throttleOffTime = cfg.throttleReleaseDelay;
+    player.landedAtBase = false;
+  } else if (mode === "bounce") {
+    player.x = player.team === "allied" ? -400 : 400;
+    player.y = 18;
+    player.speed = Math.max(cfg.stallSpeed + 30, 280);
+    player.pitch = -0.34;
+    player.effectivePitch = -0.34;
+    player.vx = dir * player.speed * Math.cos(player.pitch);
+    player.vy = player.speed * Math.sin(player.pitch);
+    player.hp = cfg.maxHp;
+    player.landedAtBase = false;
+  } else if (mode === "crash") {
+    player.x = player.team === "allied" ? -350 : 350;
+    player.y = 48;
+    player.speed = cfg.maxSpeed * 0.92;
+    player.pitch = -0.52;
+    player.effectivePitch = -0.52;
+    player.vx = dir * player.speed * Math.cos(player.pitch);
+    player.vy = player.speed * Math.sin(player.pitch);
+    player.hp = 45;
+    player.landedAtBase = false;
+
+    const enemyTeam = player.team === "allied" ? "enemy" : "allied";
+    const tankX = player.team === "allied" ? -110 : 110;
+    const troopX = player.team === "allied" ? -35 : 35;
+    if (!state.targets.some((t) => t.hp > 0 && Math.abs(t.x - tankX) < 120)) {
+      state.targets.push({
+        id: `crash_tank_${state.nextEntityId++}`,
+        kind: "main_battle_tank",
+        team: enemyTeam,
+        x: tankX,
+        y: 0,
+        vx: 0,
+        minX: tankX - 40,
+        maxX: tankX + 40,
+        hp: 650,
+        maxHp: 650,
+        dir: -dir,
+        respawnTimer: 0
+      });
+    }
+    if (!state.paratroopers.some((p) => p.y <= 10 && Math.abs(p.x - troopX) < 100)) {
+      state.paratroopers.push({
+        id: `crash_troop_${state.nextEntityId++}`,
+        team: enemyTeam,
+        kind: "infantry",
+        x: troopX,
+        y: 0,
+        vx: 0,
+        vy: 0,
+        dir: -dir,
+        phase: "march",
+        collapseTimer: 0,
+        walkPhase: 0,
+        hp: 40
+      });
+    }
   } else {
     player.x = player.team === "allied" ? -1200 : 1200;
     player.y = 320;
@@ -231,6 +297,7 @@ export function swapPlayerAircraft(state, playerId, nextType = null) {
   player.effectivePitch = 0;
   player.throttleOffTime = 0;
   player.stallTime = 0;
+  player.wavePhase = 0;
   player.crashing = false;
   player.crashSlideTicks = 0;
   player.turnTimer = 0;
@@ -354,7 +421,7 @@ function updateHeli(player, input, dt) {
   return "ok";
 }
 
-function updateP47(state, player, input, dt) {
+export function updateP47(state, player, input, dt) {
   const cfg = AIRCRAFT_CONFIG.p47;
   const hInput = (input.right ? 1 : 0) - (input.left ? 1 : 0);
   const vInput = (input.up ? 1 : 0) - (input.down ? 1 : 0);
@@ -374,6 +441,7 @@ function updateP47(state, player, input, dt) {
     player.pitch = 0;
     player.effectivePitch = 0;
     player.airborneTime = 0;
+    player.wavePhase = 0;
     player.throttleOffTime = 0;
     player.stallTime = 0;
 
@@ -420,6 +488,7 @@ function updateP47(state, player, input, dt) {
 
   // Airborne flight!
   player.airborneTime += dt;
+  player.wavePhase = (player.wavePhase || 0) + cfg.sineOmega * dt;
   player.rotorPhase += dt * 24;
 
   // Wide U-turn with continuous horizontal momentum: vx(p) = startDir * startSpeed * cos(pi * p)
@@ -503,8 +572,8 @@ function updateP47(state, player, input, dt) {
   player.stallVy = (1 - lift) * cfg.stallSinkGravity;
 
   // Shallow, long-wavelength vertical sine-wave cruise oscillation (active only with wing lift)
-  const waveVelY = Math.cos(player.airborneTime * cfg.sineOmega) * cfg.sineAmpVel * lift;
-  const wavePitch = Math.cos(player.airborneTime * cfg.sineOmega) * cfg.sinePitchAmp * lift;
+  const waveVelY = Math.cos(player.wavePhase) * cfg.sineAmpVel * lift;
+  const wavePitch = Math.cos(player.wavePhase) * cfg.sinePitchAmp * lift;
   const minClampPitch = Math.min(-cfg.maxPitch, cfg.maxDivePitch);
   const effectivePitch = clamp(player.pitch + (vInput === 0 ? wavePitch : 0), minClampPitch, cfg.maxPitch);
 
@@ -544,6 +613,7 @@ function updateP47(state, player, input, dt) {
       player.effectivePitch = 0;
       player.throttleOffTime = 0;
       player.stallTime = 0;
+      player.wavePhase = 0;
       player.speed = impactVx;
     } else {
       const dmg = onStrip
@@ -702,7 +772,7 @@ function updateWeapons(state, player, input) {
   }
 }
 
-function updateCrashSlide(state, player, dt) {
+export function updateCrashSlide(state, player, dt) {
   const cfg = AIRCRAFT_CONFIG[player.aircraftType] || AIRCRAFT_CONFIG.p47;
   player.y = 0;
   player.vy = 0;
@@ -774,6 +844,8 @@ export function stepSimulation(state, inputsByPlayer = {}) {
         player.effectivePitch = 0;
         player.throttleOffTime = 0;
         player.stallTime = 0;
+        player.airborneTime = 0;
+        player.wavePhase = 0;
         player.dir = player.team === "allied" ? 1 : -1;
         player.hp = cfg.maxHp;
         player.secondaryAmmo = cfg.maxSecondary;

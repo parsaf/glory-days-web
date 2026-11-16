@@ -108,6 +108,9 @@ function decodeWsFrames(buffer) {
 
 function resolveStaticPath(urlPath) {
   const cleanUrl = decodeURIComponent(urlPath.split("?")[0]);
+  if (cleanUrl === "/flight-lab" || cleanUrl === "/flight-lab/") {
+    return path.join(PUBLIC_DIR, "flight-lab.html");
+  }
   if (cleanUrl.startsWith("/shared/")) {
     const rel = path.normalize(cleanUrl.slice("/shared/".length)).replace(/^(\.\.[/\\])+/, "");
     const abs = path.join(SHARED_DIR, rel);

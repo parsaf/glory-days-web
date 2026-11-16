@@ -182,6 +182,9 @@ export class SpriteBattlefieldRenderer {
 
     // Keep ground visible cleanly near lower fifth while climbing
     const groundScreenY = Math.min(h - 54, Math.max(h * 0.72, h * 0.82 + (this.camY - 150) * 0.35 * this.camZoom));
+    this.lastViewW = w;
+    this.lastViewH = h;
+    this.lastGroundScreenY = groundScreenY;
 
     // 1. 2.5D Sky Backdrop
     const sky = ctx.createLinearGradient(0, 0, 0, h);

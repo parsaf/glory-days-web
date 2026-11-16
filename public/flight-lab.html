@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Glory Days — P-47 Flight Physics Test Lab</title>
+  <style>
+    :root {
+      --bg: #080d1a;
+      --panel: #111827;
+      --card: #1e293b;
+      --border: #334155;
+      --fg: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --amber: #f59e0b;
+      --ok: #22c55e;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+      user-select: none;
+    }
+    #lab-shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 400px;
+      width: 100%;
+      height: 100%;
+    }
+    #lab-stage {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      border-right: 1px solid var(--border);
+    }
+
+    /* Top Gym Bar */
+    #lab-topbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      flex: 0 0 auto;
+    }
+    .topbar-left, .topbar-right {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+    }
+    .lab-back {
+      background: #0f172a;
+      color: #cbd5e1;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 5px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .lab-back:hover { background: #1e293b; color: #ffffff; border-color: #64748b; }
+
+    .scen-btn {
+      background: var(--card);
+      color: #cbd5e1;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .scen-btn:hover { background: #334155; color: #f8fafc; }
+    .scen-btn.active {
+      background: rgba(56, 189, 248, 0.22);
+      border-color: var(--accent);
+      color: #bae6fd;
+    }
+
+    .gym-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: #cbd5e1;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 4px 8px;
+      cursor: pointer;
+    }
+    .gym-toggle input { accent-color: var(--accent); cursor: pointer; margin: 0; }
+    #opt-sim-speed {
+      background: #0f172a;
+      color: #f8fafc;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 4px 7px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    /* Viewport */
+    #viewport-wrap {
+      position: relative;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+    }
+    #battlefield {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    #overlay-legend {
+      position: absolute;
+      top: 10px;
+      left: 12px;
+      right: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      pointer-events: none;
+    }
+    .legend-pill {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 7px;
+      padding: 4px 10px;
+      font-size: 11px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      backdrop-filter: blur(5px);
+    }
+    .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 4px;
+    }
+    .kbd {
+      display: inline-block;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: #0f172a;
+      border: 1px solid #475569;
+      font-family: ui-monospace, monospace;
+      font-size: 10px;
+      color: #f8fafc;
+    }
+
+    /* Bottom Telemetry Strip */
+    #lab-telemetry {
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      padding: 8px 12px;
+      display: grid;
+      grid-template-columns: 1.55fr 0.75fr 0.9fr 1.25fr;
+      gap: 10px;
+      flex: 0 0 auto;
+    }
+    .tel-box {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 10px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 5px;
+      min-width: 0;
+    }
+    .tel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .tel-head strong {
+      font-family: ui-monospace, monospace;
+      color: #f8fafc;
+      font-size: 11px;
+      text-transform: none;
+    }
+
+    /* Speed Spectrum Ruler */
+    #spec-track {
+      position: relative;
+      height: 20px;
+      background: #0b1324;
+      border: 1px solid #334155;
+      border-radius: 5px;
+      margin-top: 2px;
+    }
+    #spec-fill {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      background: linear-gradient(90deg, rgba(239, 68, 68, 0.55), rgba(245, 158, 11, 0.55) 40%, rgba(34, 197, 94, 0.55));
+      border-radius: 4px 0 0 4px;
+    }
+    #spec-needle {
+      position: absolute;
+      top: -2px;
+      bottom: -2px;
+      width: 3px;
+      background: #ffffff;
+      box-shadow: 0 0 6px #ffffff;
+      transform: translateX(-1px);
+      z-index: 4;
+    }
+    .spec-pin {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      z-index: 3;
+    }
+    .spec-pin span {
+      position: absolute;
+      top: 2px;
+      left: 3px;
+      font-family: ui-monospace, monospace;
+      font-size: 9px;
+      font-weight: 800;
+      white-space: nowrap;
+      text-shadow: 0 1px 2px #000;
+    }
+
+    .bar-track {
+      height: 9px;
+      background: #0b1324;
+      border: 1px solid #334155;
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      width: 0%;
+    }
+    .timer-row {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .timer-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      color: #cbd5e1;
+      font-family: ui-monospace, monospace;
+    }
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 3px 8px;
+      font-size: 11px;
+    }
+    .metric-cell {
+      display: flex;
+      justify-content: space-between;
+      font-family: ui-monospace, monospace;
+    }
+    .metric-cell span { color: var(--muted); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 10px; }
+
+    /* Right Tuning Dock */
+    #lab-dock {
+      background: var(--panel);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      height: 100%;
+      padding: 10px;
+      gap: 8px;
+    }
+    .dock-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex: 0 0 auto;
+    }
+    #lab-net-status {
+      font-size: 10px;
+      font-weight: 800;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      color: #94a3b8;
+    }
+    .dock-actions {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+    .dock-btn {
+      background: var(--card);
+      color: #f8fafc;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .dock-btn:hover { background: #334155; }
+    .dock-btn.primary { background: rgba(37, 99, 235, 0.35); border-color: #3b82f6; color: #dbeafe; }
+    .dock-btn.warn { background: rgba(180, 83, 9, 0.25); border-color: #d97706; color: #fde68a; }
+
+    #lab-groups {
+      overflow-y: auto;
+      padding-right: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      min-height: 0;
+      flex: 1 1 auto;
+    }
+    .tuner-group {
+      background: rgba(30, 41, 59, 0.72);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 9px;
+    }
+    .tuner-group summary {
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--accent);
+      list-style: none;
+    }
+    .tuner-group[open] summary { margin-bottom: 6px; }
+    .tuner-list { display: flex; flex-direction: column; gap: 8px; }
+    .tuner-row {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding-top: 5px;
+      border-top: 1px solid rgba(148, 163, 184, 0.14);
+    }
+    .tuner-label-wrap {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+    }
+    .tuner-label { font-weight: 700; color: #f8fafc; }
+    .tuner-badges { display: flex; align-items: center; gap: 6px; font-family: ui-monospace, monospace; font-size: 10px; }
+    .tuner-def { color: #64748b; }
+    .tuner-unit { color: #94a3b8; }
+    .tuner-inputs {
+      display: grid;
+      grid-template-columns: 1fr 74px;
+      gap: 6px;
+      align-items: center;
+    }
+    .tuner-inputs input[type="range"] { width: 100%; accent-color: var(--accent); cursor: pointer; }
+    .tuner-num {
+      width: 100%;
+      background: #0f172a;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      color: #f8fafc;
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      padding: 2px 5px;
+      text-align: right;
+    }
+    .tuner-num:focus { outline: none; border-color: var(--accent); }
+    .tuner-desc { font-size: 10px; line-height: 1.25; color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <div id="lab-shell">
+    <section id="lab-stage">
+      <header id="lab-topbar">
+        <div class="topbar-left">
+          <a href="/" class="lab-back">← Main Game</a>
+          <strong style="font-size:12px;color:#fbbf24;letter-spacing:0.04em;">P-47 FLIGHT LAB</strong>
+          <button class="scen-btn active" data-scenario="cruise" type="button">Cruise Air</button>
+          <button class="scen-btn" data-scenario="stall" type="button">Stall &amp; Dive</button>
+          <button class="scen-btn" data-scenario="bounce" type="button">Bounce Impact</button>
+          <button class="scen-btn" data-scenario="crash" type="button">Crash Slide</button>
+          <button class="scen-btn" data-scenario="runway" type="button">Runway Takeoff</button>
+        </div>
+
+        <div class="topbar-right">
+          <label class="gym-toggle" title="Maintain cruiseSpeed hands-free while tuning cruise & sine wave parameters">
+            <input id="opt-auto-throttle" type="checkbox" checked />
+            <span>Auto-Throttle</span>
+          </label>
+          <label class="gym-toggle" title="Automatically respawn Stall, Bounce, and Crash scenarios after finishing">
+            <input id="opt-auto-loop" type="checkbox" checked />
+            <span>Auto-Loop</span>
+          </label>
+          <label class="gym-toggle" title="Draw live 2.5s predicted trajectory curve & pitch reference rays">
+            <input id="opt-show-overlay" type="checkbox" checked />
+            <span>2.5s Curve &amp; Vectors</span>
+          </label>
+          <select id="opt-sim-speed" title="Simulation Time Scale">
+            <option value="1">1.0x Live</option>
+            <option value="0.5">0.5x Slow</option>
+            <option value="0.2">0.2x Micro</option>
+            <option value="0">Pause (Space)</option>
+          </select>
+        </div>
+      </header>
+
+      <div id="viewport-wrap">
+        <canvas id="battlefield"></canvas>
+
+        <div id="overlay-legend">
+          <div class="legend-pill">
+            <span><span class="dot" style="background:#22c55e;"></span>Cruise Lift</span>
+            <span><span class="dot" style="background:#f59e0b;"></span>Stall Glide</span>
+            <span><span class="dot" style="background:#ef4444;"></span>Nose Dive</span>
+            <span><span class="dot" style="background:#22d3ee;"></span>Bounce</span>
+            <span><span class="dot" style="background:#f97316;"></span>Crash Slide</span>
+          </div>
+          <div class="legend-pill" style="color:#cbd5e1;">
+            <span><span class="kbd">←</span><span class="kbd">→</span> Thrust / U-Turn</span>
+            <span><span class="kbd">↑</span><span class="kbd">↓</span> Pitch</span>
+            <span><span class="kbd">Space</span> Pause</span>
+          </div>
+        </div>
+      </div>
+
+      <footer id="lab-telemetry">
+        <div class="tel-box">
+          <div class="tel-head">
+            <span>Speed Spectrum</span>
+            <strong id="spec-readout">420 / 540 px/s</strong>
+          </div>
+          <div id="spec-track">
+            <div id="spec-fill"></div>
+            <div id="pin-min-glide" class="spec-pin" style="background:#ef4444;"><span style="color:#fca5a5;">GLD</span></div>
+            <div id="pin-takeoff" class="spec-pin" style="background:#38bdf8;"><span style="color:#bae6fd;top:9px;">T/O</span></div>
+            <div id="pin-stall" class="spec-pin" style="background:#f59e0b;"><span style="color:#fde68a;">STL</span></div>
+            <div id="pin-cruise" class="spec-pin" style="background:#22c55e;"><span style="color:#bbf7d0;top:9px;">CRS</span></div>
+            <div id="spec-needle"></div>
+          </div>
+        </div>
+
+        <div class="tel-box">
+          <div class="tel-head">
+            <span>Wing Lift</span>
+            <strong id="lift-pct" style="color:#22c55e;">100%</strong>
+          </div>
+          <div class="bar-track"><div id="lift-fill" class="bar-fill" style="width:100%;background:#22c55e;"></div></div>
+          <div class="timer-label" id="tel-phase" style="color:#22c55e;font-weight:800;">CRUISE</div>
+        </div>
+
+        <div class="tel-box">
+          <div class="timer-row">
+            <div class="timer-label"><span>Coast Delay</span><span id="coast-readout">0.00 / 0.20s</span></div>
+            <div class="bar-track"><div id="coast-fill" class="bar-fill" style="background:#38bdf8;"></div></div>
+          </div>
+          <div class="timer-row">
+            <div class="timer-label"><span>Stall Glide Delay</span><span id="stall-readout">0.00 / 0.30s</span></div>
+            <div class="bar-track"><div id="stall-fill" class="bar-fill" style="background:#f59e0b;"></div></div>
+          </div>
+        </div>
+
+        <div class="tel-box">
+          <div class="metrics-grid">
+            <div class="metric-cell"><span>PITCH</span><strong id="tel-pitch">0.0°</strong></div>
+            <div class="metric-cell"><span>EFF. NOSE</span><strong id="tel-eff-pitch">0.0°</strong></div>
+            <div class="metric-cell"><span>VX / VY</span><strong id="tel-vxvy">420 / 0</strong></div>
+            <div class="metric-cell"><span>ALT / HP</span><strong id="tel-alt">320m • 300</strong></div>
+          </div>
+        </div>
+      </footer>
+    </section>
+
+    <aside id="lab-dock" aria-label="P-47 Parameters">
+      <div class="dock-header">
+        <strong style="font-size:12px;color:#fbbf24;letter-spacing:0.04em;">28 TUNABLE PARAMETERS</strong>
+        <span id="lab-net-status">STANDALONE LOCAL</span>
+      </div>
+
+      <div class="dock-actions">
+        <button id="lab-reset-btn" class="dock-btn warn" type="button">Reset Defaults</button>
+        <button id="lab-save-btn" class="dock-btn primary" type="button">Save Config</button>
+        <button id="lab-copy-btn" class="dock-btn" type="button">Copy JSON</button>
+      </div>
+
+      <div id="lab-groups"></div>
+    </aside>
+  </div>
+
+  <script type="module" src="/js/flight_lab.mjs"></script>
+</body>
+</html>

@@ -3,12 +3,10 @@ import {
   addPlayer,
   createInitialState,
   handlePlayerUtility,
-  spawnPlayerP47Test,
   stepSimulation,
   swapPlayerAircraft,
   updateP47Config
 } from "../../shared/simulation.mjs";
-import { DevPhysicsTuner } from "./dev_tuner.mjs";
 import { TacticalHud } from "./hud.mjs";
 import { KeyboardInput } from "./input.mjs";
 import { SpriteBattlefieldRenderer } from "./renderer.mjs";
@@ -17,6 +15,13 @@ const canvas = document.getElementById("battlefield");
 const renderer = new SpriteBattlefieldRenderer(canvas);
 const hud = new TacticalHud();
 
+try {
+  const saved = localStorage.getItem("glory_days_p47_config");
+  if (saved) updateP47Config(JSON.parse(saved));
+} catch {
+  // Ignore invalid or inaccessible storage
+}
+
 let state = createInitialState();
 let localPlayerId = "local_p1";
 addPlayer(state, localPlayerId, "allied", "heli");
@@ -24,35 +29,7 @@ addPlayer(state, localPlayerId, "allied", "heli");
 let ws = null;
 let wsConnected = false;
 
-const tuner = new DevPhysicsTuner({
-  initialOpen: true,
-  onPatch: (patch) => {
-    updateP47Config(patch);
-    if (wsConnected && ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "updateP47Config", patch }));
-    }
-  },
-  onReset: () => {
-    const cfg = updateP47Config({ reset: true });
-    tuner.applyConfig(cfg);
-    if (wsConnected && ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "updateP47Config", patch: { reset: true } }));
-    }
-  },
-  onSpawnTest: (mode) => {
-    if (wsConnected && ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "spawnP47Test", mode }));
-    } else {
-      spawnPlayerP47Test(state, localPlayerId, mode);
-    }
-  }
-});
-
 const input = new KeyboardInput((action) => {
-  if (action.type === "toggleTuner") {
-    tuner.toggle();
-    return;
-  }
   if (action.type === "toggleMenu") {
     hud.setMenuOpen(action.open);
     return;
@@ -88,11 +65,11 @@ function connectWebSocket() {
         localPlayerId = data.playerId;
         state = data.state;
         if (data.p47Config) {
-          tuner.applyConfig(data.p47Config);
+          updateP47Config(data.p47Config);
         }
         hud.setNetStatus(`ONLINE (${data.team.toUpperCase()})`, "#22c55e");
       } else if (data.type === "p47Config") {
-        tuner.applyConfig(data.config);
+        updateP47Config(data.config);
       } else if (data.type === "snapshot") {
         state = data.state;
         if (state.events?.length) renderer.ingestEvents(state.events);
@@ -136,7 +113,6 @@ function loop(now) {
 
   renderer.render(state, localPlayerId, frameDt);
   hud.update(state, localPlayerId, renderer.camX);
-  tuner.updateTelemetry(state, localPlayerId);
   requestAnimationFrame(loop);
 }
 
