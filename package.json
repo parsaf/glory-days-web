@@ -1,0 +1,13 @@
+{
+  "name": "glory-days-web",
+  "version": "0.1.0",
+  "description": "2.5D Sprite-Based Multiplayer Side-Scrolling Action-RTS inspired by Glory Days 2",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.mjs",
+    "test": "node --test tests/simulation.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

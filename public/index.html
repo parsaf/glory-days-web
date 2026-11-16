@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Glory Days Web — Phase 1 Flight Prototype</title>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --deck: #111827;
+      --panel: #1e293b;
+      --border: #334155;
+      --fg: #f1f5f9;
+      --muted: #94a3b8;
+      --allied: #3b82f6;
+      --enemy: #ef4444;
+      --accent: #f59e0b;
+      --ok: #22c55e;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+      user-select: none;
+    }
+    #app {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+    }
+    #viewport-wrap {
+      position: relative;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+    }
+    #battlefield {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Top HUD Overlay */
+    #top-bar {
+      position: absolute;
+      top: 10px;
+      left: 12px;
+      right: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      pointer-events: none;
+    }
+    .hud-pill {
+      background: rgba(15, 23, 42, 0.82);
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      backdrop-filter: blur(6px);
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .hq-bar-wrap {
+      width: 96px;
+      height: 8px;
+      background: #0f172a;
+      border-radius: 4px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.12);
+    }
+    .hq-bar-fill {
+      height: 100%;
+      transition: width 120ms linear;
+    }
+    #tug-strip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .bunker-pip {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      border: 1px solid rgba(255,255,255,0.28);
+      background: #475569;
+      font-size: 9px;
+      line-height: 12px;
+      text-align: center;
+      font-weight: 700;
+    }
+    .bunker-pip.allied { background: var(--allied); }
+    .bunker-pip.enemy { background: var(--enemy); }
+
+    #base-banner {
+      position: absolute;
+      top: 54px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(15, 23, 42, 0.88);
+      border: 1px solid var(--ok);
+      color: #dcfce7;
+      padding: 5px 14px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      display: none;
+      pointer-events: none;
+    }
+
+    /* Q Requisition Drawer (Keyboard 1-9 & 0) */
+    #q-drawer {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(920px, calc(100% - 24px));
+      background: rgba(15, 23, 42, 0.94);
+      border: 1px solid rgba(245, 158, 11, 0.55);
+      border-radius: 10px;
+      padding: 10px 12px;
+      display: none;
+      pointer-events: none;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.55);
+    }
+    #q-drawer.open { display: block; }
+    #q-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      margin-bottom: 8px;
+      color: var(--accent);
+      font-weight: 700;
+    }
+    #q-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .q-item {
+      background: rgba(30, 41, 59, 0.9);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+    }
+    .q-item.active-ready {
+      border-color: var(--ok);
+      background: rgba(34, 197, 94, 0.14);
+    }
+    .q-item.phase2-locked {
+      opacity: 0.62;
+    }
+    .q-key {
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      background: #0f172a;
+      border: 1px solid rgba(255,255,255,0.22);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      color: var(--accent);
+      flex: 0 0 auto;
+    }
+
+    /* Bottom DS-Style Tactical Command Deck */
+    #command-deck {
+      height: 164px;
+      flex: 0 0 164px;
+      background: var(--deck);
+      border-top: 2px solid var(--border);
+      display: grid;
+      grid-template-columns: 270px 1fr 270px;
+      gap: 10px;
+      padding: 10px 12px;
+    }
+    .deck-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-width: 0;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+    }
+    .meter-track {
+      width: 100%;
+      height: 8px;
+      background: #0f172a;
+      border-radius: 4px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+    .meter-fill {
+      height: 100%;
+      transition: width 60ms linear;
+    }
+    .pip-row {
+      display: flex;
+      gap: 3px;
+      flex-wrap: wrap;
+    }
+    .pip {
+      width: 9px;
+      height: 12px;
+      border-radius: 2px;
+      background: #334155;
+    }
+    .pip.on { background: #f59e0b; }
+    .pip.flare.on { background: #38bdf8; }
+    .pip.troop.on { background: #22c55e; }
+    #radar {
+      width: 100%;
+      height: 104px;
+      background: #0b1324;
+      border-radius: 6px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      display: block;
+    }
+    .kbd {
+      display: inline-block;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: #0f172a;
+      border: 1px solid #475569;
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      color: #f8fafc;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="viewport-wrap">
+      <canvas id="battlefield"></canvas>
+
+      <div id="top-bar">
+        <div class="hud-pill">
+          <span style="color:#60a5fa;font-weight:700;">ALLIED HQ</span>
+          <div class="hq-bar-wrap"><div id="allied-hq-bar" class="hq-bar-fill" style="width:100%;background:#3b82f6;"></div></div>
+          <span style="color:#fbbf24;font-weight:800;" id="funds-label">$500</span>
+        </div>
+
+        <div class="hud-pill" id="tug-strip">
+          <span style="color:var(--muted);font-size:11px;">CHECKPOINTS</span>
+          <div id="bunker-pips" style="display:flex;gap:4px;"></div>
+          <span id="pos-readout" style="font-family:ui-monospace,monospace;font-size:11px;color:#cbd5e1;margin-left:6px;">X: -5320m</span>
+        </div>
+
+        <div class="hud-pill">
+          <span id="net-status" style="font-size:11px;font-weight:700;color:#22c55e;">CONNECTING...</span>
+          <div class="hq-bar-wrap"><div id="enemy-hq-bar" class="hq-bar-fill" style="width:100%;background:#ef4444;"></div></div>
+          <span style="color:#f87171;font-weight:700;">ENEMY HQ</span>
+        </div>
+      </div>
+
+      <div id="base-banner">LANDED ON BASE PAD — REPAIRING &amp; REARMING • PRESS <span class="kbd">Q</span> → <span class="kbd">0</span> TO SWAP AIRCRAFT • <span class="kbd">E</span> TO LOAD TROOPS</div>
+
+      <div id="q-drawer">
+        <div id="q-header">
+          <span>REQUISITION &amp; BASE MENU (Press 1–9 or 0)</span>
+          <span style="color:var(--muted);font-weight:500;">Press <span class="kbd">Q</span> to close</span>
+        </div>
+        <div id="q-grid"></div>
+      </div>
+    </div>
+
+    <div id="command-deck">
+      <!-- Left Card: Aircraft Status & Burst-Fire Reservoir -->
+      <div class="deck-card">
+        <div class="row">
+          <strong id="craft-name" style="color:#f8fafc;">HELICOPTER</strong>
+          <span id="hp-text" style="font-family:ui-monospace,monospace;font-size:11px;color:#94a3b8;">350 / 350 HP</span>
+        </div>
+        <div class="meter-track"><div id="hp-fill" class="meter-fill" style="width:100%;background:#22c55e;"></div></div>
+
+        <div class="row" style="margin-top:2px;">
+          <span style="font-size:11px;color:var(--muted);">Gun Burst <span class="kbd">A</span></span>
+          <span id="burst-state" style="font-size:10px;font-weight:700;color:#22c55e;">BURST READY (12/s)</span>
+        </div>
+        <div class="meter-track"><div id="burst-fill" class="meter-fill" style="width:100%;background:#22c55e;"></div></div>
+
+        <div class="row" style="margin-top:2px;">
+          <span style="font-size:11px;color:var(--muted);">Ordnance <span class="kbd">S</span></span>
+          <div id="sec-pips" class="pip-row"></div>
+        </div>
+        <div class="row">
+          <span style="font-size:11px;color:var(--muted);">Flares <span class="kbd">Z</span></span>
+          <div id="flare-pips" class="pip-row"></div>
+        </div>
+      </div>
+
+      <!-- Center Card: Full-Map 12,000m Radar Strip -->
+      <div class="deck-card" style="padding:6px 8px;">
+        <div class="row" style="margin-bottom:4px;">
+          <span style="font-size:11px;font-weight:700;letter-spacing:0.04em;color:#cbd5e1;">TACTICAL RADAR (12,000m BATTLEFIELD)</span>
+          <span id="cabin-readout" style="font-size:11px;color:#86efac;font-weight:600;">CABIN: 4 / 8 PARATROOPERS</span>
+        </div>
+        <canvas id="radar"></canvas>
+      </div>
+
+      <!-- Right Card: Strictly Keyboard Control Legend -->
+      <div class="deck-card" style="font-size:11px;gap:3px;">
+        <div class="row"><strong style="color:#fbbf24;">KEYBOARD CONTROLS</strong><span id="team-badge" style="font-weight:700;color:#60a5fa;">ALLIED</span></div>
+        <div class="row"><span style="color:var(--muted);">Flight / Aim</span><span><span class="kbd">←</span> <span class="kbd">→</span> <span class="kbd">↑</span> <span class="kbd">↓</span></span></div>
+        <div class="row"><span style="color:var(--muted);">Primary Gun</span><span><span class="kbd">A</span> (Burst → Slow)</span></div>
+        <div class="row"><span style="color:var(--muted);">Bomb / Rocket</span><span><span class="kbd">S</span> (1/3 Map Fuel)</span></div>
+        <div class="row"><span style="color:var(--muted);">Flares / Troops</span><span><span class="kbd">Z</span> Flares • <span class="kbd">E</span> Drop/Load</span></div>
+        <div class="row"><span style="color:var(--muted);">Purchase / Swap</span><span><span class="kbd">Q</span> Menu → <span class="kbd">0</span> Swap</span></div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/js/main.mjs"></script>
+</body>
+</html>
