@@ -4,32 +4,75 @@ export class KeyboardInput {
     this.keys = new Set();
     this.menuOpen = false;
     this.b52Aiming = false;
+    this.lobbyOpen = false;
     this.onAction = onAction;
 
     this._onKeyDown = (e) => {
+      const code = this.resolveCode(e);
       const target = e.target;
       const inFormField = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT");
       if (inFormField) {
-        if (e.code === "Escape" || e.code === "Enter") {
+        if (!this.lobbyOpen && target.classList?.contains("lobby-input")) {
           target.blur();
-          e.preventDefault();
+        } else {
+          if (code === "Escape" || code === "Enter") {
+            target.blur();
+            e.preventDefault();
+          }
+          return;
         }
-        return;
       }
 
-      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) {
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(code)) {
         e.preventDefault();
       }
       if (e.repeat) return;
 
-      this.keys.add(e.code);
+      this.keys.add(code);
 
-      if (e.code === "Backquote") {
+      if (code === "Backquote") {
         this.onAction({ type: "toggleTuner" });
         return;
       }
 
-      if (e.code === "Escape") {
+      if (this.lobbyOpen) {
+        if (code === "Enter" || code === "Space") {
+          e.preventDefault();
+          this.onAction({ type: "lobbyLaunch" });
+          return;
+        }
+        if (code === "ArrowLeft") {
+          this.onAction({ type: "lobbyTeam", team: "allied" });
+          return;
+        }
+        if (code === "ArrowRight") {
+          this.onAction({ type: "lobbyTeam", team: "enemy" });
+          return;
+        }
+        if (code === "Digit1" || code === "Numpad1") {
+          this.onAction({ type: "lobbyAircraft", aircraftType: "heli" });
+          return;
+        }
+        if (code === "Digit2" || code === "Numpad2") {
+          this.onAction({ type: "lobbyAircraft", aircraftType: "p47" });
+          return;
+        }
+        if (code === "KeyM") {
+          this.onAction({ type: "cycleMatchMode" });
+          return;
+        }
+        if (code === "KeyB") {
+          this.onAction({ type: "toggleBots" });
+          return;
+        }
+        if (code === "KeyN") {
+          this.onAction({ type: "toggleAudio" });
+          return;
+        }
+        return;
+      }
+
+      if (code === "Escape") {
         if (this.menuOpen || this.b52Aiming) {
           this.menuOpen = false;
           this.b52Aiming = false;
@@ -38,7 +81,7 @@ export class KeyboardInput {
         return;
       }
 
-      if (e.code === "KeyQ") {
+      if (code === "KeyQ") {
         if (this.b52Aiming) {
           this.b52Aiming = false;
           this.menuOpen = false;
@@ -50,24 +93,44 @@ export class KeyboardInput {
         return;
       }
 
-      if (this.b52Aiming && (e.code === "KeyS" || e.code === "Enter")) {
+      if (this.b52Aiming && (code === "KeyS" || code === "Enter")) {
         e.preventDefault();
         this.onAction({ type: "confirmB52" });
         return;
       }
 
-      if (e.code === "KeyR") {
+      if (code === "KeyR") {
         this.onAction({ type: "restartMatch" });
         return;
       }
 
-      if (e.code === "KeyE") {
+      if (code === "KeyM") {
+        this.onAction({ type: "cycleMatchMode" });
+        return;
+      }
+
+      if (code === "KeyB") {
+        this.onAction({ type: "toggleBots" });
+        return;
+      }
+
+      if (code === "KeyN") {
+        this.onAction({ type: "toggleAudio" });
+        return;
+      }
+
+      if (code === "KeyL") {
+        this.onAction({ type: "returnToLobby" });
+        return;
+      }
+
+      if (code === "KeyE") {
         this.onAction({ type: "utility" });
         return;
       }
 
-      if (this.menuOpen && (e.code.startsWith("Digit") || e.code.startsWith("Numpad"))) {
-        const digit = e.code.replace("Digit", "").replace("Numpad", "");
+      if (this.menuOpen && (code.startsWith("Digit") || code.startsWith("Numpad"))) {
+        const digit = code.replace("Digit", "").replace("Numpad", "");
         if (/^[0-9]$/.test(digit)) {
           this.onAction({ type: "menuKey", key: digit });
         }
@@ -75,16 +138,51 @@ export class KeyboardInput {
     };
 
     this._onKeyUp = (e) => {
-      this.keys.delete(e.code);
+      this.keys.delete(this.resolveCode(e));
     };
 
     this._onBlur = () => {
       this.keys.clear();
     };
 
+    this._onPointerDown = () => {
+      if (!this.lobbyOpen && typeof document !== "undefined" && document.activeElement?.classList?.contains("lobby-input")) {
+        document.activeElement.blur();
+      }
+    };
+
     window.addEventListener("keydown", this._onKeyDown);
     window.addEventListener("keyup", this._onKeyUp);
     window.addEventListener("blur", this._onBlur);
+    window.addEventListener("pointerdown", this._onPointerDown);
+  }
+
+  resolveCode(e) {
+    if (e?.code) return e.code;
+    const key = e?.key || "";
+    const map = {
+      ArrowUp: "ArrowUp",
+      ArrowDown: "ArrowDown",
+      ArrowLeft: "ArrowLeft",
+      ArrowRight: "ArrowRight",
+      " ": "Space",
+      Enter: "Enter",
+      Escape: "Escape",
+      "`": "Backquote",
+      q: "KeyQ", Q: "KeyQ",
+      r: "KeyR", R: "KeyR",
+      l: "KeyL", L: "KeyL",
+      e: "KeyE", E: "KeyE",
+      a: "KeyA", A: "KeyA",
+      s: "KeyS", S: "KeyS",
+      z: "KeyZ", Z: "KeyZ",
+      m: "KeyM", M: "KeyM",
+      b: "KeyB", B: "KeyB",
+      n: "KeyN", N: "KeyN",
+      0: "Digit0", 1: "Digit1", 2: "Digit2", 3: "Digit3", 4: "Digit4",
+      5: "Digit5", 6: "Digit6", 7: "Digit7", 8: "Digit8", 9: "Digit9"
+    };
+    return map[key] || key;
   }
 
   isRawKeyDown(code) {
@@ -92,6 +190,17 @@ export class KeyboardInput {
   }
 
   getSnapshot() {
+    if (this.lobbyOpen) {
+      return {
+        left: false,
+        right: false,
+        up: false,
+        down: false,
+        firePrimary: false,
+        fireSecondary: false,
+        fireFlare: false
+      };
+    }
     return {
       left: this.b52Aiming ? false : this.keys.has("ArrowLeft"),
       right: this.b52Aiming ? false : this.keys.has("ArrowRight"),
@@ -107,5 +216,6 @@ export class KeyboardInput {
     window.removeEventListener("keydown", this._onKeyDown);
     window.removeEventListener("keyup", this._onKeyUp);
     window.removeEventListener("blur", this._onBlur);
+    window.removeEventListener("pointerdown", this._onPointerDown);
   }
 }

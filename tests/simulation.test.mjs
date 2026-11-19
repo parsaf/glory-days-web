@@ -17,15 +17,23 @@ import {
 import {
   addPlayer,
   calculateCivilianPayout,
+  configureMatch,
   createInitialState,
+  createNetworkSnapshot,
   handlePlayerRequisition,
   handlePlayerUtility,
+  reconcileClientState,
+  removePlayer,
   resetMatch,
+  returnToLobby,
+  setPlayerLobbyChoice,
   spawnCivilian,
   spawnGroundUnit,
   spawnPlayerP47Test,
+  startMatch,
   stepSimulation,
   swapPlayerAircraft,
+  syncBotPlayers,
   updateP47Config
 } from "../shared/simulation.mjs";
 
@@ -916,4 +924,219 @@ test("Phase 2: [8] B-52 Carpet Raid drops 24 bombs & is interceptable; [9] V2 Mi
     if (v2State.events.some((e) => e.type === "v2_intercepted")) intercepted = true;
   }
   assert.equal(intercepted, true, "Enemy aircraft can intercept launched V2 missile mid-flight");
+});
+
+test("Phase 3: Match modes (1v1, 2v2, 3v3) & dynamic bot slot auto-fill", () => {
+  const state = createInitialState({ includePracticeTargets: false, matchMode: "1v1", botsEnabled: true });
+  addPlayer(state, "h1", "allied", "heli", { isBot: false, callsign: "H1" });
+  syncBotPlayers(state);
+
+  const countTeam = (team) => Object.values(state.players).filter((p) => p.team === team).length;
+  assert.equal(countTeam("allied"), 1);
+  assert.equal(countTeam("enemy"), 1);
+  assert.equal(Object.values(state.players).filter((p) => p.team === "enemy" && p.isBot).length, 1);
+
+  configureMatch(state, { matchMode: "2v2" });
+  assert.equal(countTeam("allied"), 2);
+  assert.equal(countTeam("enemy"), 2);
+
+  configureMatch(state, { matchMode: "3v3" });
+  assert.equal(countTeam("allied"), 3);
+  assert.equal(countTeam("enemy"), 3);
+
+  // Adding a second human on allied replaces one allied bot slot cleanly
+  addPlayer(state, "h2", "allied", "p47", { isBot: false, callsign: "H2" });
+  syncBotPlayers(state);
+  assert.equal(countTeam("allied"), 3);
+  assert.equal(Object.values(state.players).filter((p) => p.team === "allied" && p.isBot).length, 1);
+
+  // Removing h2 restores the bot slot; disabling bots removes all bots
+  removePlayer(state, "h2");
+  syncBotPlayers(state);
+  assert.equal(countTeam("allied"), 3);
+  assert.equal(Object.values(state.players).filter((p) => p.team === "allied" && p.isBot).length, 2);
+
+  configureMatch(state, { botsEnabled: false });
+  assert.equal(Object.values(state.players).filter((p) => p.isBot).length, 0);
+});
+
+test("Phase 3: AI Bot Commanders spend funds & AI pilots take off, fly sorties, and flare SAM locks", () => {
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false, matchMode: "2v2", botsEnabled: true });
+  addPlayer(state, "h1", "allied", "heli", { isBot: false });
+  syncBotPlayers(state);
+
+  state.teamFunds.allied = 1000;
+  state.teamFunds.enemy = 1000;
+
+  // Step 120 ticks (2 seconds): bots should requisition units and take off from pads
+  for (let t = 0; t < 120; t++) {
+    stepSimulation(state, { h1: {} });
+  }
+
+  assert.ok(state.units.some((u) => u.team === "allied"), "Allied AI commander buys ground units");
+  assert.ok(state.units.some((u) => u.team === "enemy"), "Enemy AI commander buys ground units");
+
+  const bots = Object.values(state.players).filter((p) => p.isBot);
+  assert.ok(bots.length >= 2);
+  assert.ok(bots.some((b) => b.y > 20), "AI pilots lift off and fly airborne sorties");
+
+  // SAM warning reflex triggers bot flare deployment
+  const targetBot = bots[0];
+  targetBot.y = 200;
+  targetBot.samWarningTicks = 60;
+  targetBot.flareCooldown = 0;
+  const flaresBefore = targetBot.flaresAmmo;
+  stepSimulation(state, { h1: {} });
+  assert.equal(targetBot.flaresAmmo, flaresBefore - 1, "Bot pilot automatically deploys flare on SAM lock");
+});
+
+test("Phase 3: 20 Hz compact network snapshots and client-side prediction reconciliation", () => {
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const p1 = addPlayer(state, "p1", "allied", "p47");
+  p1.x = -1234.56789;
+  p1.y = 321.98765;
+  p1.vx = 412.3456;
+
+  const snap = createNetworkSnapshot(state, [{ type: "income_tick", team: "allied", income: 10, tick: 1 }]);
+  assert.equal(snap.players.p1.x, -1234.57);
+  assert.equal(snap.players.p1.y, 321.99);
+  assert.equal(snap.players.p1.vx, 412.35);
+  assert.equal(snap.events.length, 1);
+
+  // Small discrepancy (< 180m) blends smoothly instead of hard snapping
+  const localState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const localP = addPlayer(localState, "p1", "allied", "p47");
+  localP.x = 100;
+  localP.y = 200;
+  localP.vx = 400;
+
+  const serverState = createNetworkSnapshot(localState);
+  serverState.players.p1.x = 140;
+  serverState.players.p1.y = 220;
+
+  const reconciled = reconcileClientState(localState, serverState, "p1");
+  assert.ok(reconciled.players.p1.x > 100 && reconciled.players.p1.x < 140, "Blends small horizontal prediction drift");
+  assert.ok(reconciled.players.p1.y > 200 && reconciled.players.p1.y < 220, "Blends small vertical prediction drift");
+
+  // Large discrepancy (>= 180m) snaps directly to authoritative server state
+  serverState.players.p1.x = 500;
+  const snapped = reconcileClientState(localState, serverState, "p1");
+  assert.equal(snapped.players.p1.x, 500, "Large discrepancy snaps cleanly to server position");
+});
+
+test("Phase 3 Lobby: holds match clock in lobby, applies team/aircraft/callsign choices, launches and returns cleanly", () => {
+  const state = createInitialState({ phase: "lobby", roomId: "BRAVO", matchMode: "2v2", botsEnabled: true });
+  addPlayer(state, "p1", "allied", "heli", { isBot: false, callsign: "P1" });
+  syncBotPlayers(state);
+
+  assert.equal(state.phase, "lobby");
+  assert.equal(state.roomId, "BRAVO");
+
+  // Stepping simulation in lobby phase must hold tick, funds, and units frozen
+  for (let t = 0; t < 120; t++) {
+    stepSimulation(state, { p1: { firePrimary: true, right: true } });
+  }
+  assert.equal(state.tick, 0, "Simulation tick stays paused at 0 during pre-match lobby");
+  assert.equal(state.teamFunds.allied, 500);
+  assert.equal(state.units.length, 0);
+
+  // Player switches to Enemy team, P-47 Thunderbolt, callsign "ACE", and marks Ready
+  const updated = setPlayerLobbyChoice(state, "p1", {
+    team: "enemy",
+    aircraftType: "p47",
+    callsign: "ACE",
+    ready: true
+  });
+  assert.equal(updated.team, "enemy");
+  assert.equal(updated.aircraftType, "p47");
+  assert.equal(updated.callsign, "ACE");
+  assert.equal(updated.ready, true);
+  assert.equal(updated.x, BASES.enemy.padCenterX);
+
+  const alliedCount = Object.values(state.players).filter((p) => p.team === "allied").length;
+  const enemyCount = Object.values(state.players).filter((p) => p.team === "enemy").length;
+  assert.equal(alliedCount, 2, "Allied bots rebalance to 2 when p1 switches to Enemy");
+  assert.equal(enemyCount, 2, "Enemy roster stays 2 total (1 human + 1 bot)");
+
+  // Start match -> enters playing phase preserving choices and resumes simulation
+  startMatch(state);
+  assert.equal(state.phase, "playing");
+  assert.equal(state.players.p1.team, "enemy");
+  assert.equal(state.players.p1.aircraftType, "p47");
+  assert.equal(state.players.p1.callsign, "ACE");
+
+  stepSimulation(state, { p1: { left: true } });
+  assert.equal(state.tick, 1, "Simulation advances normally once match starts");
+
+  // Return to lobby -> resets match back to lobby phase
+  returnToLobby(state);
+  assert.equal(state.phase, "lobby");
+  assert.equal(state.tick, 0);
+  assert.equal(state.players.p1.ready, false);
+});
+
+test("Single-arrow takeoff assists & liftoff reconciliation allow immediate takeoff on P-47 and Helicopter", () => {
+  // 1. P-47 takes off when holding ArrowUp alone from standstill on pad
+  const sUp = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const pUp = addPlayer(sUp, "p1", "allied", "p47");
+  for (let i = 0; i < 60; i++) {
+    stepSimulation(sUp, { p1: { up: true } });
+  }
+  assert.ok(pUp.speed >= AIRCRAFT_CONFIG.p47.takeoffSpeed, "P-47 builds speed when holding Up alone");
+  assert.ok(pUp.y > 4, "P-47 lifts off runway when holding Up alone");
+  assert.ok(pUp.x > BASES.allied.padCenterX + 40, "P-47 moves forward during Up-only takeoff");
+
+  // 2. P-47 auto-lifts off when holding ArrowRight alone once takeoffSpeed is reached
+  const sRight = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const pRight = addPlayer(sRight, "p1", "allied", "p47");
+  for (let i = 0; i < 60; i++) {
+    stepSimulation(sRight, { p1: { right: true } });
+  }
+  assert.ok(pRight.y > 4, "P-47 automatically lifts off when holding Right past takeoffSpeed");
+
+  // 3. Helicopter lifts into hover and moves horizontally when pressing ArrowRight alone on pad
+  const sHeli = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const pHeli = addPlayer(sHeli, "p1", "allied", "heli");
+  for (let i = 0; i < 30; i++) {
+    stepSimulation(sHeli, { p1: { right: true } });
+  }
+  assert.ok(pHeli.y > 4, "Helicopter lifts off pad when pressing Right alone");
+  assert.ok(pHeli.x > BASES.allied.padCenterX + 10, "Helicopter moves forward when pressing Right alone");
+
+  // 4. Stale grounded server snapshot does not pull just-launched local client back to y = 0
+  const localSt = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const lp = addPlayer(localSt, "p1", "allied", "p47");
+  lp.y = 8;
+  lp.vy = 60;
+  lp.speed = 210;
+  lp.flightStage = 1;
+  const srvSt = createNetworkSnapshot(localSt);
+  srvSt.players.p1.y = 0;
+  srvSt.players.p1.vy = 0;
+  srvSt.players.p1.flightStage = 2;
+  const rec = reconcileClientState(localSt, srvSt, "p1");
+  assert.equal(rec.players.p1.y, 8, "Just-launched client altitude is preserved against grounded server snapshot");
+  assert.equal(rec.players.p1.flightStage, 1, "Local flightStage is preserved during reconciliation");
+});
+
+test("Network snapshots carry all state stepSimulation needs so client-side prediction never throws", () => {
+  const server = createInitialState({ phase: "lobby", roomId: "ALPHA", matchMode: "1v1", botsEnabled: true });
+  addPlayer(server, "p1", "allied", "heli", { isBot: false, callsign: "P1" });
+  syncBotPlayers(server);
+  startMatch(server);
+
+  const wire = () => JSON.parse(JSON.stringify(createNetworkSnapshot(server)));
+  let client = wire();
+  for (const key of ["baseAa", "nextEntityId", "botThinkCooldown"]) {
+    assert.ok(key in client, `snapshot includes ${key}`);
+  }
+
+  const inp = { right: true, up: true };
+  for (let t = 0; t < 120; t++) {
+    stepSimulation(server, { p1: inp });
+    assert.doesNotThrow(() => stepSimulation(client, { p1: inp }), `client prediction tick ${t} must not throw`);
+    if (t % 3 === 0) client = reconcileClientState(client, wire(), "p1");
+  }
+  assert.ok(client.players.p1.y > 20, "Predicted helicopter climbs on client");
+  assert.ok(client.players.p1.x > BASES.allied.padCenterX + 50, "Predicted helicopter moves forward on client");
 });

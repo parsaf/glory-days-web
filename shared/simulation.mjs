@@ -15,6 +15,7 @@ import {
   DT,
   GRAVITY,
   GROUND_Y,
+  MATCH_MODES,
   MAX_X,
   MIN_X,
   MISSILE_FUEL_DISTANCE,
@@ -95,10 +96,23 @@ export function createInitialState(opts = {}) {
     { id: "tgt_aa_1", kind: "aa_flak_truck", team: "enemy", x: -950, y: 0, vx: 32, minX: -2200, maxX: -450, hp: 140, maxHp: 140, dir: 1, respawnTimer: 0 }
   ];
 
+  const matchMode = MATCH_MODES[opts.matchMode] ? opts.matchMode : "1v1";
+  const botsEnabled = Boolean(opts.botsEnabled);
+  const phase = opts.phase === "lobby" ? "lobby" : "playing";
+
   const state = {
     tick: 0,
     time: 0,
+    phase,
+    roomId: opts.roomId || "ALPHA",
     winner: null,
+    matchMode,
+    botsEnabled,
+    botThinkCooldown: { allied: 0, enemy: 0 },
+    stats: {
+      allied: { unitsBought: 0, civiliansRescued: 0, bunkersCaptured: 0, fundsEarned: 500 },
+      enemy: { unitsBought: 0, civiliansRescued: 0, bunkersCaptured: 0, fundsEarned: 500 }
+    },
     includeCivilians: opts.includeCivilians !== false,
     teamFunds: {
       allied: 500,
@@ -132,10 +146,14 @@ export function createInitialState(opts = {}) {
     }
   }
 
+  if (state.botsEnabled) {
+    syncBotPlayers(state);
+  }
+
   return state;
 }
 
-export function createPlayer(id, team = "allied", aircraftType = "heli") {
+export function createPlayer(id, team = "allied", aircraftType = "heli", opts = {}) {
   const base = BASES[team];
   const cfg = AIRCRAFT_CONFIG[aircraftType];
   const dir = team === "allied" ? 1 : -1;
@@ -143,6 +161,9 @@ export function createPlayer(id, team = "allied", aircraftType = "heli") {
     id,
     team,
     aircraftType,
+    isBot: Boolean(opts.isBot),
+    callsign: opts.callsign || id.toUpperCase(),
+    ready: Boolean(opts.ready),
     x: base.padCenterX,
     y: 0,
     vx: 0,
@@ -195,10 +216,89 @@ export function createPlayer(id, team = "allied", aircraftType = "heli") {
   };
 }
 
+function ensureTeamStats(state, team) {
+  if (!state.stats) {
+    state.stats = {
+      allied: { unitsBought: 0, civiliansRescued: 0, bunkersCaptured: 0, fundsEarned: 500 },
+      enemy: { unitsBought: 0, civiliansRescued: 0, bunkersCaptured: 0, fundsEarned: 500 }
+    };
+  }
+  if (!state.stats[team]) {
+    state.stats[team] = { unitsBought: 0, civiliansRescued: 0, bunkersCaptured: 0, fundsEarned: 500 };
+  }
+  return state.stats[team];
+}
+
+export function syncBotPlayers(state) {
+  const modeCfg = MATCH_MODES[state.matchMode] || MATCH_MODES["1v1"];
+  const teamSize = modeCfg.teamSize;
+
+  if (!state.botsEnabled) {
+    for (const [id, p] of Object.entries(state.players)) {
+      if (p.isBot) delete state.players[id];
+    }
+    return;
+  }
+
+  for (const team of ["allied", "enemy"]) {
+    const humanCount = Object.values(state.players).filter((p) => !p.isBot && p.team === team).length;
+    const desiredBots = Math.max(0, teamSize - humanCount);
+    const existingBots = Object.values(state.players).filter((p) => p.isBot && p.team === team);
+
+    while (existingBots.length > desiredBots) {
+      const rem = existingBots.pop();
+      delete state.players[rem.id];
+    }
+
+    let idx = 1;
+    while (existingBots.length < desiredBots) {
+      const botId = `bot_${team}_${idx}`;
+      if (!state.players[botId]) {
+        const aircraftType = humanCount === 0
+          ? (idx % 2 === 1 ? "heli" : "p47")
+          : (idx % 2 === 1 ? "p47" : "heli");
+        const callsign = `${team === "allied" ? "ALLY" : "ENEMY"}-${idx}`;
+        const bot = createPlayer(botId, team, aircraftType, { isBot: true, callsign });
+        state.players[botId] = bot;
+        existingBots.push(bot);
+      }
+      idx += 1;
+    }
+  }
+}
+
+export function configureMatch(state, opts = {}) {
+  if (opts.matchMode && MATCH_MODES[opts.matchMode]) {
+    state.matchMode = opts.matchMode;
+  }
+  if (typeof opts.botsEnabled === "boolean") {
+    state.botsEnabled = opts.botsEnabled;
+  }
+  syncBotPlayers(state);
+  state.events.push({
+    type: "match_configured",
+    matchMode: state.matchMode,
+    botsEnabled: state.botsEnabled,
+    tick: state.tick
+  });
+  return { matchMode: state.matchMode, botsEnabled: state.botsEnabled };
+}
+
 export function resetMatch(state, opts = {}) {
   state.tick = 0;
   state.time = 0;
   state.winner = null;
+  if (opts.matchMode && MATCH_MODES[opts.matchMode]) {
+    state.matchMode = opts.matchMode;
+  }
+  if (typeof opts.botsEnabled === "boolean") {
+    state.botsEnabled = opts.botsEnabled;
+  }
+  state.botThinkCooldown = { allied: 0, enemy: 0 };
+  state.stats = {
+    allied: { unitsBought: 0, civiliansRescued: 0, bunkersCaptured: 0, fundsEarned: 500 },
+    enemy: { unitsBought: 0, civiliansRescued: 0, bunkersCaptured: 0, fundsEarned: 500 }
+  };
   state.teamFunds = { allied: 500, enemy: 500 };
   state.hqs = {
     allied: { team: "allied", x: BASES.allied.hqX, hp: BASES.allied.maxHp, maxHp: BASES.allied.maxHp },
@@ -236,14 +336,73 @@ export function resetMatch(state, opts = {}) {
   }
 
   for (const [id, existing] of Object.entries(state.players)) {
-    state.players[id] = createPlayer(id, existing.team, existing.aircraftType);
+    if (existing.isBot) {
+      delete state.players[id];
+    } else {
+      state.players[id] = createPlayer(id, existing.team, existing.aircraftType, {
+        isBot: false,
+        callsign: existing.callsign
+      });
+    }
   }
+  syncBotPlayers(state);
   state.events.push({ type: "match_reset", tick: state.tick });
   return state;
 }
 
-export function addPlayer(state, id, team = "allied", aircraftType = "heli") {
-  const p = createPlayer(id, team, aircraftType);
+export function setPlayerLobbyChoice(state, playerId, choice = {}) {
+  const existing = state.players[playerId];
+  if (!existing || existing.isBot) return null;
+
+  const nextTeam = (choice.team === "allied" || choice.team === "enemy") ? choice.team : existing.team;
+  const nextAircraft = AIRCRAFT_CONFIG[choice.aircraftType] ? choice.aircraftType : existing.aircraftType;
+  const nextCallsign = typeof choice.callsign === "string" && choice.callsign.trim()
+    ? choice.callsign.trim().slice(0, 12).toUpperCase()
+    : existing.callsign;
+  const nextReady = typeof choice.ready === "boolean" ? choice.ready : existing.ready;
+
+  state.players[playerId] = createPlayer(playerId, nextTeam, nextAircraft, {
+    isBot: false,
+    callsign: nextCallsign,
+    ready: nextReady
+  });
+  syncBotPlayers(state);
+  state.events.push({
+    type: "lobby_updated",
+    playerId,
+    team: nextTeam,
+    aircraftType: nextAircraft,
+    callsign: nextCallsign,
+    ready: nextReady,
+    tick: state.tick
+  });
+  return state.players[playerId];
+}
+
+export function startMatch(state, opts = {}) {
+  resetMatch(state, opts);
+  state.phase = "playing";
+  state.events.push({
+    type: "match_started",
+    matchMode: state.matchMode,
+    botsEnabled: state.botsEnabled,
+    tick: state.tick
+  });
+  return state;
+}
+
+export function returnToLobby(state) {
+  resetMatch(state);
+  state.phase = "lobby";
+  for (const p of Object.values(state.players)) {
+    if (!p.isBot) p.ready = false;
+  }
+  state.events.push({ type: "returned_to_lobby", tick: state.tick });
+  return state;
+}
+
+export function addPlayer(state, id, team = "allied", aircraftType = "heli", opts = {}) {
+  const p = createPlayer(id, team, aircraftType, opts);
   state.players[id] = p;
   return p;
 }
@@ -520,6 +679,7 @@ export function handlePlayerRequisition(state, playerId, key, opts = {}) {
       alive: true
     };
     state.b52s.push(b52);
+    ensureTeamStats(state, player.team).unitsBought += 1;
     state.events.push({ type: "b52_raid_called", playerId, team: player.team, b52Id: b52.id, targetX, tick: state.tick });
     return b52;
   }
@@ -551,6 +711,7 @@ export function handlePlayerRequisition(state, playerId, key, opts = {}) {
     };
     state.v2s.push(v2);
     player.controllingV2Id = v2.id;
+    ensureTeamStats(state, player.team).unitsBought += 1;
     state.events.push({ type: "v2_launched", playerId, team: player.team, v2Id: v2.id, x: v2.x, tick: state.tick });
     return v2;
   }
@@ -561,6 +722,7 @@ export function handlePlayerRequisition(state, playerId, key, opts = {}) {
 
   state.teamFunds[player.team] -= cfg.cost;
   const unit = spawnGroundUnit(state, player.team, normKey);
+  ensureTeamStats(state, player.team).unitsBought += 1;
   state.events.push({
     type: "unit_requisitioned",
     playerId,
@@ -1456,6 +1618,7 @@ function updateGroundUnits(state) {
       if (capturable) {
         capturable.owner = u.team;
         capturable.hp = capturable.maxHp;
+        ensureTeamStats(state, u.team).bunkersCaptured += 1;
         state.events.push({ type: "bunker_captured", bunkerId: capturable.id, team: u.team, tick: state.tick });
         state.units.splice(i, 1);
         continue;
@@ -1619,6 +1782,9 @@ function updateGroundUnits(state) {
             const count = u.passengers.length;
             const payout = calculateCivilianPayout(count);
             state.teamFunds[u.team] += payout;
+            const tStats = ensureTeamStats(state, u.team);
+            tStats.civiliansRescued += count;
+            tStats.fundsEarned += payout;
             u.passengers = [];
             u.returningToBase = false;
             state.events.push({
@@ -2238,7 +2404,358 @@ function updateProjectiles(state) {
   }
 }
 
+function updateAiCommanders(state) {
+  if (!state.botThinkCooldown) state.botThinkCooldown = { allied: 0, enemy: 0 };
+
+  for (const team of ["allied", "enemy"]) {
+    const bot = Object.values(state.players).find((p) => p.isBot && p.team === team);
+    if (!bot) continue;
+
+    state.botThinkCooldown[team] -= 1;
+    if (state.botThinkCooldown[team] > 0) continue;
+    state.botThinkCooldown[team] = 45;
+
+    const funds = state.teamFunds[team];
+    const myUnits = state.units.filter((u) => u.team === team && u.hp > 0);
+    const enemyUnits = state.units.filter((u) => u.team !== team && u.hp > 0);
+    const enemyAir = Object.values(state.players).some((p) => p.team !== team && p.alive && p.y > 25)
+      || state.b52s.some((b) => b.team !== team && b.alive);
+    const unownedBunkers = state.bunkers.filter((b) => b.owner !== team);
+
+    if (funds >= 750 && enemyUnits.length >= 3) {
+      handlePlayerRequisition(state, bot.id, "8", { targetX: enemyUnits[0].x });
+    } else if (unownedBunkers.length > 0 && myUnits.filter((u) => u.kind === "infantry" || u.kind === "armored_apc").length < 2) {
+      if (funds >= 225) handlePlayerRequisition(state, bot.id, "3");
+      else if (funds >= 50) handlePlayerRequisition(state, bot.id, "1");
+    } else if (state.civilians.length > 0 && !myUnits.some((u) => u.kind === "ambulance") && funds >= 120) {
+      handlePlayerRequisition(state, bot.id, "6");
+    } else if (enemyAir && myUnits.filter((u) => u.kind === "aa_flak_truck").length < 2 && funds >= 150) {
+      handlePlayerRequisition(state, bot.id, "2");
+    } else if (myUnits.filter((u) => u.kind === "main_battle_tank").length >= 1 && !myUnits.some((u) => u.kind === "supply_truck") && funds >= 200) {
+      handlePlayerRequisition(state, bot.id, "7");
+    } else if (funds >= 650 && myUnits.filter((u) => u.kind === "self_propelled_howitzer").length < 1) {
+      handlePlayerRequisition(state, bot.id, "5");
+    } else if (funds >= 400) {
+      handlePlayerRequisition(state, bot.id, "4");
+    }
+  }
+}
+
+export function computeBotPilotInput(state, bot) {
+  const inp = {
+    left: false,
+    right: false,
+    up: false,
+    down: false,
+    firePrimary: false,
+    fireSecondary: false,
+    fireFlare: false
+  };
+
+  if (bot.samWarningTicks > 0 && bot.flaresAmmo > 0 && bot.flareCooldown <= 0) {
+    inp.fireFlare = true;
+  }
+
+  const forwardDir = bot.team === "allied" ? 1 : -1;
+  const enemyTeam = bot.team === "allied" ? "enemy" : "allied";
+  const homeX = BASES[bot.team].padCenterX;
+  const enemyHqX = BASES[enemyTeam].hqX;
+
+  if (bot.aircraftType === "heli") {
+    const civCount = bot.passengers.filter((p) => p === "civilian").length;
+    const infCount = bot.passengers.filter((p) => p === "infantry").length;
+
+    if (bot.landedAtBase) {
+      if (bot.hp < bot.maxHp * 0.9) return inp;
+      if (infCount < 4 && bot.passengers.length < bot.cabinCapacity && state.tick % 15 === 0) {
+        handlePlayerUtility(state, bot.id);
+        return inp;
+      }
+      inp.up = true;
+      return inp;
+    }
+
+    let goalX = 0;
+    let goalY = 140;
+    let landingAtPad = false;
+
+    const shouldReturn = bot.hp < bot.maxHp * 0.35
+      || civCount >= 2
+      || (civCount >= 1 && state.civilians.length === 0)
+      || (infCount === 0 && bot.secondaryAmmo === 0);
+
+    if (shouldReturn) {
+      goalX = homeX;
+      if (Math.abs(bot.x - homeX) <= 90) {
+        landingAtPad = true;
+        if (bot.vy < -32) inp.up = true;
+        else if (bot.vy > -24) inp.down = true;
+      }
+    } else {
+      const safeCivs = state.civilians
+        .filter((c) => Math.abs(c.x - enemyHqX) > 1400)
+        .sort((a, b) => Math.abs(a.x - bot.x) - Math.abs(b.x - bot.x));
+
+      if (safeCivs.length > 0 && bot.passengers.length < bot.cabinCapacity) {
+        const civ = safeCivs[0];
+        goalX = civ.x;
+        goalY = Math.abs(bot.x - civ.x) <= 70 ? 8 : 110;
+      } else {
+        const unowned = state.bunkers
+          .filter((b) => b.owner === "neutral" || b.hp <= 0)
+          .sort((a, b) => Math.abs(a.x - bot.x) - Math.abs(b.x - bot.x));
+
+        if (infCount > 0 && unowned.length > 0) {
+          const b = unowned[0];
+          goalX = b.x;
+          goalY = 135;
+          if (Math.abs(bot.x - b.x) <= 45 && bot.y > 40 && state.tick % 20 === 0) {
+            handlePlayerUtility(state, bot.id);
+          }
+        } else {
+          // Frontline combat support
+          let target = null;
+          let bestDist = Infinity;
+          for (const u of state.units) {
+            if (u.team === bot.team || u.hp <= 0) continue;
+            const d = Math.abs(u.x - bot.x);
+            if (d < bestDist) { bestDist = d; target = { x: u.x, y: 20, isAir: false }; }
+          }
+          for (const t of state.targets) {
+            if (t.team === bot.team || t.hp <= 0) continue;
+            const d = Math.abs(t.x - bot.x);
+            if (d < bestDist) { bestDist = d; target = { x: t.x, y: 20, isAir: false }; }
+          }
+          for (const b of state.bunkers) {
+            if (b.owner !== enemyTeam || b.hp <= 0) continue;
+            const d = Math.abs(b.x - bot.x);
+            if (d < bestDist) { bestDist = d; target = { x: b.x, y: 36, isAir: false }; }
+          }
+          for (const ep of Object.values(state.players)) {
+            if (ep.team === bot.team || !ep.alive || ep.y <= 15) continue;
+            const d = Math.abs(ep.x - bot.x);
+            if (d < bestDist) { bestDist = d; target = { x: ep.x, y: ep.y, isAir: true }; }
+          }
+
+          if (target) {
+            goalX = target.x - forwardDir * 180;
+            goalY = target.isAir ? clamp(target.y, 80, 420) : 125;
+            if (Math.abs(target.x - bot.x) <= 380 && (target.x - bot.x) * bot.dir > 0) {
+              if (target.isAir || bot.y <= 150) inp.firePrimary = true;
+            }
+            if (!target.isAir && bot.secondaryAmmo > 0 && Math.abs(target.x - bot.x) <= 55) {
+              inp.fireSecondary = true;
+            }
+          } else {
+            goalX = 0;
+            goalY = 140;
+          }
+        }
+      }
+    }
+
+    if (goalX - bot.x > 25) inp.right = true;
+    else if (goalX - bot.x < -25) inp.left = true;
+
+    if (!landingAtPad) {
+      if (bot.y < goalY - 12) inp.up = true;
+      else if (bot.y > goalY + 18) inp.down = true;
+    }
+    return inp;
+  }
+
+  // P-47 Thunderbolt Bot Pilot
+  const cfg = AIRCRAFT_CONFIG.p47;
+  if (bot.y <= 2) {
+    if (bot.dir === 1) inp.right = true;
+    else inp.left = true;
+    if (bot.speed >= cfg.takeoffSpeed) inp.up = true;
+    return inp;
+  }
+
+  const nearEnemyBase = Math.abs(bot.x - enemyHqX) < 1150 && state.hqs[enemyTeam].hp > 800 && bot.dir === forwardDir;
+  const pastHomeSide = (bot.x - BASES[bot.team].hqX) * forwardDir < 500 && bot.dir === -forwardDir;
+  const nearWorldEdge = (bot.x > MAX_X - 600 && bot.dir === 1) || (bot.x < MIN_X + 600 && bot.dir === -1);
+  const wantTurn = nearEnemyBase || pastHomeSide || nearWorldEdge;
+
+  if (bot.turnTimer === 0) {
+    if (wantTurn) {
+      if (bot.dir === 1) inp.left = true;
+      else inp.right = true;
+    } else {
+      if (bot.dir === 1) inp.right = true;
+      else inp.left = true;
+    }
+  }
+
+  let targetY = 260;
+  const enemyB52 = state.b52s.find((b) => b.team !== bot.team && b.alive && b.hp > 0);
+  if (enemyB52) {
+    targetY = enemyB52.y;
+  } else {
+    const enemyAir = Object.values(state.players).find((p) => p.team !== bot.team && p.alive && p.y > 40);
+    if (enemyAir) targetY = clamp(enemyAir.y, 180, 900);
+  }
+
+  if (bot.y < Math.max(110, targetY - 25)) inp.up = true;
+  else if (bot.y > targetY + 25 && bot.y > 140) inp.down = true;
+
+  // Air-to-air firing
+  for (const b52 of state.b52s) {
+    if (b52.team === bot.team || !b52.alive || b52.hp <= 0) continue;
+    const dx = (b52.x - bot.x) * bot.dir;
+    if (dx > 0 && dx <= 1400 && Math.abs(b52.y - bot.y) < 120) {
+      if (dx <= 750) inp.firePrimary = true;
+      if (Math.abs(b52.y - bot.y) < 65 && bot.secondaryAmmo > 0) inp.fireSecondary = true;
+    }
+  }
+  for (const ep of Object.values(state.players)) {
+    if (ep.team === bot.team || !ep.alive || ep.y <= 20) continue;
+    const dx = (ep.x - bot.x) * bot.dir;
+    if (dx > 0 && dx <= 1400 && Math.abs(ep.y - bot.y) < 120) {
+      if (dx <= 750) inp.firePrimary = true;
+      if (Math.abs(ep.y - bot.y) < 65 && bot.secondaryAmmo > 0) inp.fireSecondary = true;
+    }
+  }
+  for (const v2 of state.v2s) {
+    if (v2.team === bot.team || !v2.alive || v2.hp <= 0) continue;
+    const dx = (v2.x - bot.x) * bot.dir;
+    if (dx > 0 && dx <= 750 && Math.abs(v2.y - bot.y) < 100) inp.firePrimary = true;
+  }
+
+  // Ground strafe/rockets when cruising low
+  if (bot.y < 360) {
+    const gTgt = findGroundEnemyTarget(state, bot.x, bot.team, 900);
+    if (gTgt && (gTgt.x - bot.x) * bot.dir > 0) {
+      if (bot.pitch <= 0.05 && gTgt.dist < 550) inp.firePrimary = true;
+      if (bot.secondaryAmmo > 0 && gTgt.dist >= 220 && gTgt.dist <= 850 && bot.pitch < 0.02) {
+        inp.fireSecondary = true;
+      }
+    }
+  }
+
+  return inp;
+}
+
+const r2 = (n) => (typeof n === "number" && Number.isFinite(n) ? Math.round(n * 100) / 100 : n);
+
+export function createNetworkSnapshot(state, eventsOverride = null) {
+  const players = {};
+  for (const [id, p] of Object.entries(state.players)) {
+    players[id] = {
+      ...p,
+      x: r2(p.x),
+      y: r2(p.y),
+      vx: r2(p.vx),
+      vy: r2(p.vy),
+      speed: r2(p.speed),
+      pitch: r2(p.pitch),
+      effectivePitch: r2(p.effectivePitch),
+      hp: r2(p.hp),
+      passengers: [...p.passengers]
+    };
+  }
+
+  return {
+    tick: state.tick,
+    time: r2(state.time),
+    phase: state.phase || "playing",
+    roomId: state.roomId || "ALPHA",
+    winner: state.winner,
+    matchMode: state.matchMode,
+    botsEnabled: state.botsEnabled,
+    includeCivilians: state.includeCivilians,
+    // Required by stepSimulation when clients run local prediction on received snapshots
+    nextEntityId: state.nextEntityId,
+    botThinkCooldown: { ...(state.botThinkCooldown || { allied: 0, enemy: 0 }) },
+    baseAa: {
+      allied: { ...(state.baseAa?.allied || { flakCooldown: 0, samCooldown: 0 }) },
+      enemy: { ...(state.baseAa?.enemy || { flakCooldown: 0, samCooldown: 0 }) }
+    },
+    players,
+    teamFunds: {
+      allied: r2(state.teamFunds.allied),
+      enemy: r2(state.teamFunds.enemy)
+    },
+    hqs: {
+      allied: { ...state.hqs.allied, hp: r2(state.hqs.allied.hp) },
+      enemy: { ...state.hqs.enemy, hp: r2(state.hqs.enemy.hp) }
+    },
+    bunkers: state.bunkers.map((b) => ({ ...b, hp: r2(b.hp) })),
+    units: state.units.map((u) => ({
+      ...u,
+      x: r2(u.x),
+      y: r2(u.y),
+      vx: r2(u.vx),
+      hp: r2(u.hp),
+      passengers: u.passengers ? [...u.passengers] : []
+    })),
+    targets: state.targets.map((t) => ({ ...t, x: r2(t.x), y: r2(t.y), vx: r2(t.vx), hp: r2(t.hp) })),
+    paratroopers: state.paratroopers.map((p) => ({ ...p, x: r2(p.x), y: r2(p.y), vx: r2(p.vx), vy: r2(p.vy), hp: r2(p.hp) })),
+    civilians: state.civilians.map((c) => ({ ...c, x: r2(c.x), y: r2(c.y), vx: r2(c.vx) })),
+    b52s: state.b52s.map((b) => ({ ...b, x: r2(b.x), y: r2(b.y), vx: r2(b.vx), hp: r2(b.hp) })),
+    v2s: state.v2s.map((v) => ({ ...v, x: r2(v.x), y: r2(v.y), vx: r2(v.vx), vy: r2(v.vy), speed: r2(v.speed), pitch: r2(v.pitch), hp: r2(v.hp) })),
+    projectiles: state.projectiles.map((pr) => ({ ...pr, x: r2(pr.x), y: r2(pr.y), vx: r2(pr.vx), vy: r2(pr.vy) })),
+    flares: state.flares.map((f) => ({ ...f, x: r2(f.x), y: r2(f.y), vx: r2(f.vx), vy: r2(f.vy) })),
+    stats: state.stats,
+    events: eventsOverride ?? state.events
+  };
+}
+
+export function reconcileClientState(localState, serverState, localPlayerId) {
+  const localP = localState?.players?.[localPlayerId];
+  const srvP = serverState?.players?.[localPlayerId];
+  if (
+    localP &&
+    srvP &&
+    srvP.alive &&
+    localP.alive &&
+    !srvP.crashing &&
+    !localP.crashing &&
+    srvP.aircraftType === localP.aircraftType &&
+    !srvP.controllingV2Id
+  ) {
+    const dist = Math.hypot(srvP.x - localP.x, srvP.y - localP.y);
+    if (dist < 180) {
+      const blend = 0.35;
+      srvP.x = localP.x + (srvP.x - localP.x) * blend;
+      if (localP.y > 0 && srvP.y <= 0.5 && localP.vy > 0 && localP.y < 30) {
+        srvP.y = localP.y;
+        srvP.vy = localP.vy;
+      } else {
+        srvP.y = localP.y + (srvP.y - localP.y) * blend;
+        srvP.vy = localP.vy + (srvP.vy - localP.vy) * blend;
+      }
+      srvP.vx = localP.vx + (srvP.vx - localP.vx) * blend;
+      srvP.speed = localP.speed + (srvP.speed - localP.speed) * blend;
+      srvP.pitch = localP.pitch + (srvP.pitch - localP.pitch) * blend;
+      srvP.effectivePitch = localP.effectivePitch + (srvP.effectivePitch - localP.effectivePitch) * blend;
+      srvP.dir = localP.dir;
+      srvP.flightStage = localP.flightStage;
+      srvP.throttleOffTime = localP.throttleOffTime;
+      srvP.stallTime = localP.stallTime;
+      srvP.wavePhase = localP.wavePhase;
+      srvP.oppHoldTime = localP.oppHoldTime;
+      srvP.prevHInput = localP.prevHInput;
+      srvP.rotorPhase = localP.rotorPhase;
+      srvP.airborneTime = localP.airborneTime;
+      if (localP.turnTimer > 0) {
+        srvP.turnTimer = localP.turnTimer;
+        srvP.turnDuration = localP.turnDuration;
+        srvP.turnStartDir = localP.turnStartDir;
+        srvP.turnStartSpeed = localP.turnStartSpeed;
+      }
+    }
+  }
+  return serverState;
+}
+
 export function stepSimulation(state, inputsByPlayer = {}) {
+  if (state.phase === "lobby") {
+    state.events = [];
+    return state;
+  }
+
   state.tick += 1;
   state.time = state.tick * DT;
   state.events = [];
@@ -2253,11 +2770,18 @@ export function stepSimulation(state, inputsByPlayer = {}) {
       const ownedBunkers = state.bunkers.filter((b) => b.owner === team && b.hp > 0).length;
       const income = BASE_INCOME_PER_SEC + BUNKER_INCOME_PER_SEC * ownedBunkers;
       state.teamFunds[team] += income;
+      ensureTeamStats(state, team).fundsEarned += income;
       state.events.push({ type: "income_tick", team, income, ownedBunkers, tick: state.tick });
     }
   }
 
+  // 0b. AI Bot Commanders
+  if (state.botsEnabled) {
+    updateAiCommanders(state);
+  }
+
   // 1. Update Players
+  const resolvedInputs = { ...inputsByPlayer };
   for (const player of Object.values(state.players)) {
     player.samWarningTicks = Math.max(0, (player.samWarningTicks || 0) - 1);
 
@@ -2312,8 +2836,22 @@ export function stepSimulation(state, inputsByPlayer = {}) {
     }
 
     // When steering a launched V2 cruise missile, aircraft coasts hands-off while arrow keys steer V2
-    const rawInput = inputsByPlayer[player.id] || {};
-    const aircraftInput = player.controllingV2Id ? {} : rawInput;
+    const rawInput = resolvedInputs[player.id] !== undefined
+      ? resolvedInputs[player.id]
+      : (player.isBot && state.botsEnabled ? computeBotPilotInput(state, player) : {});
+    resolvedInputs[player.id] = rawInput;
+    let aircraftInput = player.controllingV2Id ? {} : rawInput;
+    if (!player.controllingV2Id && player.aircraftType === "p47" && player.y <= 0.5) {
+      if (aircraftInput.up && !aircraftInput.left && !aircraftInput.right) {
+        aircraftInput = { ...aircraftInput, [player.dir >= 0 ? "right" : "left"]: true };
+      } else if ((aircraftInput.left || aircraftInput.right) && !aircraftInput.down && player.speed >= AIRCRAFT_CONFIG.p47.takeoffSpeed) {
+        aircraftInput = { ...aircraftInput, up: true };
+      }
+    } else if (!player.controllingV2Id && player.aircraftType === "heli" && player.y <= 2) {
+      if ((aircraftInput.left || aircraftInput.right) && !aircraftInput.down) {
+        aircraftInput = { ...aircraftInput, up: true };
+      }
+    }
     const status = player.aircraftType === "heli"
       ? updateHeli(player, aircraftInput, DT)
       : updateP47(state, player, aircraftInput, DT);
@@ -2341,6 +2879,9 @@ export function stepSimulation(state, inputsByPlayer = {}) {
         player.passengers = player.passengers.filter((p) => p !== "civilian");
         const payout = calculateCivilianPayout(civCount);
         state.teamFunds[player.team] += payout;
+        const tStats = ensureTeamStats(state, player.team);
+        tStats.civiliansRescued += civCount;
+        tStats.fundsEarned += payout;
         state.events.push({
           type: "civilians_rescued",
           by: "heli",
@@ -2376,7 +2917,7 @@ export function stepSimulation(state, inputsByPlayer = {}) {
   updateGroundUnits(state);
   updateDefenses(state);
   updateB52s(state);
-  updateV2s(state, inputsByPlayer);
+  updateV2s(state, resolvedInputs);
 
   // 4. Update Projectiles (straight-line fuel tracking, SAM homing/spoofing, gravity & hit detection)
   updateProjectiles(state);
@@ -2426,6 +2967,7 @@ export function stepSimulation(state, inputsByPlayer = {}) {
       } else if (targetBunker.owner !== p.team && (targetBunker.owner === "neutral" || targetBunker.hp <= 0)) {
         targetBunker.owner = p.team;
         targetBunker.hp = targetBunker.maxHp;
+        ensureTeamStats(state, p.team).bunkersCaptured += 1;
         state.events.push({ type: "bunker_captured", bunkerId: targetBunker.id, team: p.team, tick: state.tick });
         state.paratroopers.splice(i, 1);
       }

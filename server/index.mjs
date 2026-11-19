@@ -3,17 +3,23 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AIRCRAFT_CONFIG, DT } from "../shared/constants.mjs";
+import { AIRCRAFT_CONFIG, DT, SNAPSHOT_INTERVAL_TICKS } from "../shared/constants.mjs";
 import {
   addPlayer,
+  configureMatch,
   createInitialState,
+  createNetworkSnapshot,
   handlePlayerRequisition,
   handlePlayerUtility,
   removePlayer,
   resetMatch,
+  returnToLobby,
+  setPlayerLobbyChoice,
   spawnPlayerP47Test,
+  startMatch,
   stepSimulation,
   swapPlayerAircraft,
+  syncBotPlayers,
   updateP47Config
 } from "../shared/simulation.mjs";
 
@@ -150,18 +156,118 @@ function resolveStaticPath(urlPath) {
   return abs.startsWith(PUBLIC_DIR) ? abs : null;
 }
 
-const state = createInitialState();
-const clients = new Map(); // playerId -> { socket, team, input }
+const rooms = new Map();
+const allClients = new Map(); // playerId -> client
 let playerSeq = 1;
 
-function nextTeam() {
+function sanitizeRoomId(raw) {
+  const clean = String(raw || "ALPHA").trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "").slice(0, 12);
+  return clean || "ALPHA";
+}
+
+function getOrCreateRoom(roomId) {
+  const id = sanitizeRoomId(roomId);
+  if (!rooms.has(id)) {
+    rooms.set(id, {
+      id,
+      state: createInitialState({ phase: "lobby", roomId: id, matchMode: "1v1", botsEnabled: true }),
+      clients: new Map(),
+      pendingEvents: [],
+      snapshotTickCounter: 0
+    });
+  }
+  return rooms.get(id);
+}
+
+for (const preset of ["ALPHA", "BRAVO", "CHARLIE"]) {
+  getOrCreateRoom(preset);
+}
+
+function getRoomsSummary() {
+  const list = [];
+  for (const r of rooms.values()) {
+    list.push({
+      id: r.id,
+      phase: r.state.phase,
+      matchMode: r.state.matchMode,
+      botsEnabled: r.state.botsEnabled,
+      humanCount: r.clients.size
+    });
+  }
+  return list;
+}
+
+function broadcastRoomSnapshot(room, eventsOverride = null) {
+  const frame = encodeWsFrame(JSON.stringify({
+    type: "snapshot",
+    state: createNetworkSnapshot(room.state, eventsOverride),
+    rooms: getRoomsSummary()
+  }));
+  for (const c of room.clients.values()) {
+    if (!c.socket.destroyed) c.socket.write(frame);
+  }
+}
+
+function nextTeamForRoom(room) {
   let alliedCount = 0;
   let enemyCount = 0;
-  for (const c of clients.values()) {
+  for (const c of room.clients.values()) {
     if (c.team === "allied") alliedCount++;
     else enemyCount++;
   }
   return alliedCount <= enemyCount ? "allied" : "enemy";
+}
+
+function attachClientToRoom(client, targetRoom, choice = {}) {
+  const oldRoom = client.room;
+  if (oldRoom === targetRoom) return;
+
+  if (oldRoom) {
+    oldRoom.clients.delete(client.id);
+    removePlayer(oldRoom.state, client.id);
+    syncBotPlayers(oldRoom.state);
+    if (oldRoom.clients.size === 0) {
+      returnToLobby(oldRoom.state);
+      oldRoom.pendingEvents = [];
+      oldRoom.snapshotTickCounter = 0;
+    } else {
+      broadcastRoomSnapshot(oldRoom);
+    }
+  }
+
+  const team = (choice.team === "allied" || choice.team === "enemy") ? choice.team : nextTeamForRoom(targetRoom);
+  const aircraftType = choice.aircraftType === "p47" ? "p47" : "heli";
+  const callsign = typeof choice.callsign === "string" && choice.callsign.trim()
+    ? choice.callsign.trim().slice(0, 12).toUpperCase()
+    : (client.callsign || client.id.toUpperCase());
+
+  client.room = targetRoom;
+  client.team = team;
+  client.callsign = callsign;
+  client.input = {};
+  targetRoom.clients.set(client.id, client);
+
+  if (targetRoom.state.winner !== null) {
+    returnToLobby(targetRoom.state);
+    targetRoom.pendingEvents = [];
+    targetRoom.snapshotTickCounter = 0;
+  }
+
+  addPlayer(targetRoom.state, client.id, team, aircraftType, { isBot: false, callsign, ready: false });
+  syncBotPlayers(targetRoom.state);
+
+  if (!client.socket.destroyed) {
+    client.socket.write(encodeWsFrame(JSON.stringify({
+      type: "welcome",
+      playerId: client.id,
+      team,
+      roomId: targetRoom.id,
+      state: createNetworkSnapshot(targetRoom.state),
+      rooms: getRoomsSummary(),
+      p47Config: { ...AIRCRAFT_CONFIG.p47 }
+    })));
+  }
+  broadcastRoomSnapshot(targetRoom);
 }
 
 const server = http.createServer((req, res) => {
@@ -172,7 +278,12 @@ const server = http.createServer((req, res) => {
     return;
   }
   const ext = path.extname(filePath).toLowerCase();
-  res.writeHead(200, { "Content-Type": MIME_TYPES[ext] || "application/octet-stream" });
+  res.writeHead(200, {
+    "Content-Type": MIME_TYPES[ext] || "application/octet-stream",
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0"
+  });
   fs.createReadStream(filePath).pipe(res);
 });
 
@@ -202,11 +313,20 @@ server.on("upgrade", (req, socket) => {
   );
 
   const playerId = `p${playerSeq++}`;
-  const team = nextTeam();
-  addPlayer(state, playerId, team, "heli");
-  clients.set(playerId, { socket, team, input: {} });
+  const reqUrl = new URL(req.url || "/ws", "http://localhost");
+  const referer = String(req.headers.referer || "");
+  const isTunerOnly = referer.includes("/flight-lab") || reqUrl.searchParams.get("tuner") === "1";
+  const client = { id: playerId, socket, room: null, tunerOnly: isTunerOnly, team: "allied", callsign: playerId.toUpperCase(), input: {} };
+  allClients.set(playerId, client);
 
-  socket.write(encodeWsFrame(JSON.stringify({ type: "welcome", playerId, team, state, p47Config: { ...AIRCRAFT_CONFIG.p47 } })));
+  if (isTunerOnly) {
+    if (!socket.destroyed) {
+      socket.write(encodeWsFrame(JSON.stringify({ type: "p47Config", config: { ...AIRCRAFT_CONFIG.p47 } })));
+    }
+  } else {
+    const initialRoom = getOrCreateRoom(reqUrl.searchParams.get("room") || "ALPHA");
+    attachClientToRoom(client, initialRoom);
+  }
 
   let rxBuf = Buffer.alloc(0);
   socket.on("data", (chunk) => {
@@ -226,29 +346,93 @@ server.on("upgrade", (req, socket) => {
       if (msg.kind === "text") {
         try {
           const cmd = JSON.parse(msg.text);
-          const client = clients.get(playerId);
-          if (!client) continue;
-          if (cmd.type === "input" && cmd.input) {
-            client.input = cmd.input;
-          } else if (cmd.type === "utility") {
-            handlePlayerUtility(state, playerId);
-          } else if (cmd.type === "swapAircraft") {
-            swapPlayerAircraft(state, playerId);
-          } else if (cmd.type === "requisition") {
-            handlePlayerRequisition(state, playerId, String(cmd.key), { targetX: cmd.targetX });
-          } else if (cmd.type === "restartMatch") {
-            resetMatch(state);
-          } else if (cmd.type === "updateP47Config" && cmd.patch) {
+          const activeClient = allClients.get(playerId);
+          if (!activeClient) continue;
+
+          if (cmd.type === "updateP47Config" && cmd.patch) {
             const config = updateP47Config(cmd.patch);
             if (cmd.persist === true) {
               persistP47ConfigToFile(config);
             }
             const frame = encodeWsFrame(JSON.stringify({ type: "p47Config", config }));
-            for (const c of clients.values()) {
+            for (const c of allClients.values()) {
               if (!c.socket.destroyed) c.socket.write(frame);
             }
+            continue;
+          }
+
+          const room = activeClient.room;
+          if (!room) continue;
+
+          if (cmd.type === "input" && cmd.input) {
+            activeClient.input = cmd.input;
+          } else if (cmd.type === "joinRoom") {
+            const targetRoom = getOrCreateRoom(cmd.roomId);
+            attachClientToRoom(activeClient, targetRoom, {
+              team: cmd.team,
+              aircraftType: cmd.aircraftType,
+              callsign: cmd.callsign
+            });
+          } else if (cmd.type === "lobbySelect") {
+            const updated = setPlayerLobbyChoice(room.state, playerId, {
+              team: cmd.team,
+              aircraftType: cmd.aircraftType,
+              callsign: cmd.callsign,
+              ready: cmd.ready
+            });
+            if (updated) {
+              activeClient.team = updated.team;
+              activeClient.callsign = updated.callsign;
+            }
+            if (room.state.phase === "lobby" && room.clients.size >= 2) {
+              const allHumansReady = Array.from(room.clients.keys()).every((id) => room.state.players[id]?.ready);
+              if (allHumansReady) {
+                startMatch(room.state);
+                room.pendingEvents = [];
+                room.snapshotTickCounter = 0;
+              }
+            }
+            broadcastRoomSnapshot(room, room.state.events);
+          } else if (cmd.type === "startMatch") {
+            if (cmd.team || cmd.aircraftType || cmd.callsign) {
+              const updated = setPlayerLobbyChoice(room.state, playerId, {
+                team: cmd.team,
+                aircraftType: cmd.aircraftType,
+                callsign: cmd.callsign
+              });
+              if (updated) {
+                activeClient.team = updated.team;
+                activeClient.callsign = updated.callsign;
+              }
+            }
+            if (cmd.matchMode || typeof cmd.botsEnabled === "boolean") {
+              configureMatch(room.state, { matchMode: cmd.matchMode, botsEnabled: cmd.botsEnabled });
+            }
+            startMatch(room.state);
+            room.pendingEvents = [];
+            room.snapshotTickCounter = 0;
+            broadcastRoomSnapshot(room, room.state.events);
+          } else if (cmd.type === "returnToLobby") {
+            returnToLobby(room.state);
+            room.pendingEvents = [];
+            room.snapshotTickCounter = 0;
+            broadcastRoomSnapshot(room, room.state.events);
+          } else if (cmd.type === "utility") {
+            handlePlayerUtility(room.state, playerId);
+          } else if (cmd.type === "swapAircraft") {
+            swapPlayerAircraft(room.state, playerId);
+          } else if (cmd.type === "requisition") {
+            handlePlayerRequisition(room.state, playerId, String(cmd.key), { targetX: cmd.targetX });
+          } else if (cmd.type === "configureMatch") {
+            configureMatch(room.state, { matchMode: cmd.matchMode, botsEnabled: cmd.botsEnabled });
+            broadcastRoomSnapshot(room, room.state.events);
+          } else if (cmd.type === "restartMatch") {
+            resetMatch(room.state);
+            room.pendingEvents = [];
+            room.snapshotTickCounter = 0;
+            broadcastRoomSnapshot(room, room.state.events);
           } else if (cmd.type === "spawnP47Test") {
-            spawnPlayerP47Test(state, playerId, cmd.mode || "air");
+            spawnPlayerP47Test(room.state, playerId, cmd.mode || "air");
           }
         } catch {
           // Ignore malformed JSON payloads
@@ -258,14 +442,26 @@ server.on("upgrade", (req, socket) => {
   });
 
   const cleanup = () => {
-    clients.delete(playerId);
-    removePlayer(state, playerId);
+    const activeClient = allClients.get(playerId);
+    allClients.delete(playerId);
+    const room = activeClient?.room;
+    if (!room) return;
+    room.clients.delete(playerId);
+    removePlayer(room.state, playerId);
+    syncBotPlayers(room.state);
+    if (room.clients.size === 0) {
+      returnToLobby(room.state);
+      room.pendingEvents = [];
+      room.snapshotTickCounter = 0;
+    } else {
+      broadcastRoomSnapshot(room);
+    }
   };
   socket.on("close", cleanup);
   socket.on("error", cleanup);
 });
 
-// Fixed-timestep 60 Hz authoritative game loop
+// Fixed-timestep 60 Hz authoritative simulation loop + 20 Hz compact snapshot broadcasts
 let lastHr = process.hrtime.bigint();
 let acc = 0;
 
@@ -276,15 +472,25 @@ setInterval(() => {
   if (acc > 0.25) acc = 0.25;
 
   while (acc >= DT) {
-    if (clients.size > 0) {
+    for (const room of rooms.values()) {
+      if (room.clients.size === 0 || room.state.phase !== "playing") continue;
       const inputs = {};
-      for (const [id, c] of clients.entries()) {
+      for (const [id, c] of room.clients.entries()) {
         inputs[id] = c.input;
       }
-      stepSimulation(state, inputs);
-      const frame = encodeWsFrame(JSON.stringify({ type: "snapshot", state }));
-      for (const c of clients.values()) {
-        if (!c.socket.destroyed) c.socket.write(frame);
+      stepSimulation(room.state, inputs);
+      if (room.state.events.length) {
+        room.pendingEvents.push(...room.state.events);
+      }
+      room.snapshotTickCounter += 1;
+      const immediate = room.pendingEvents.some(
+        (e) => e.type === "match_won" || e.type === "match_reset" || e.type === "match_configured"
+      );
+      if (immediate || room.snapshotTickCounter >= SNAPSHOT_INTERVAL_TICKS) {
+        room.snapshotTickCounter = 0;
+        const batch = room.pendingEvents;
+        room.pendingEvents = [];
+        broadcastRoomSnapshot(room, batch);
       }
     }
     acc -= DT;

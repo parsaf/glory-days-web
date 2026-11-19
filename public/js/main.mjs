@@ -1,14 +1,21 @@
 import { DT, MAX_X, MIN_X, STRATEGIC_CONFIG } from "../../shared/constants.mjs";
 import {
   addPlayer,
+  configureMatch,
   createInitialState,
   handlePlayerRequisition,
   handlePlayerUtility,
+  reconcileClientState,
   resetMatch,
+  returnToLobby,
+  setPlayerLobbyChoice,
+  startMatch,
   stepSimulation,
   swapPlayerAircraft,
+  syncBotPlayers,
   updateP47Config
 } from "../../shared/simulation.mjs";
+import { BattlefieldAudio } from "./audio.mjs";
 import { TacticalHud } from "./hud.mjs";
 import { KeyboardInput } from "./input.mjs";
 import { SpriteBattlefieldRenderer } from "./renderer.mjs";
@@ -16,6 +23,7 @@ import { SpriteBattlefieldRenderer } from "./renderer.mjs";
 const canvas = document.getElementById("battlefield");
 const renderer = new SpriteBattlefieldRenderer(canvas);
 const hud = new TacticalHud();
+const audio = new BattlefieldAudio();
 
 try {
   const saved = localStorage.getItem("glory_days_p47_config_v2");
@@ -24,15 +32,175 @@ try {
   // Ignore invalid or inaccessible storage
 }
 
-let state = createInitialState();
+let state = createInitialState({ phase: "lobby", matchMode: "1v1", botsEnabled: true });
 let localPlayerId = "local_p1";
-addPlayer(state, localPlayerId, "allied", "heli");
+addPlayer(state, localPlayerId, "allied", "heli", { isBot: false, callsign: "YOU" });
+syncBotPlayers(state);
 
 let ws = null;
 let wsConnected = false;
+let roomsList = [];
+let prevPhase = state.phase;
+let lastSentInputJson = "";
+let inputHeartbeat = 0;
 const b52Aiming = { active: false, targetX: 1800 };
+const seenEventKeys = new Set();
+
+function releaseUiFocus() {
+  if (document.activeElement && typeof document.activeElement.blur === "function" && document.activeElement !== document.body) {
+    document.activeElement.blur();
+  }
+  window.focus?.();
+}
+
+function applyLobbyChoice(choice) {
+  audio.unlock();
+  if (wsConnected && ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "lobbySelect", ...choice }));
+  } else {
+    setPlayerLobbyChoice(state, localPlayerId, choice);
+    dispatchEvents(state.events);
+  }
+}
+
+function setMatchConfig(cfg) {
+  audio.unlock();
+  if (wsConnected && ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "configureMatch", ...cfg }));
+  } else {
+    configureMatch(state, cfg);
+    dispatchEvents(state.events);
+  }
+}
+
+function launchSortie() {
+  audio.unlock();
+  releaseUiFocus();
+  const localP = state.players[localPlayerId];
+  const callsignInput = document.getElementById("lobby-callsign");
+  const typedCallsign = callsignInput?.value?.trim();
+  if (wsConnected && ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: "startMatch",
+      team: localP?.team,
+      aircraftType: localP?.aircraftType,
+      callsign: typedCallsign || localP?.callsign,
+      matchMode: state.matchMode,
+      botsEnabled: state.botsEnabled
+    }));
+  } else {
+    if (typedCallsign) setPlayerLobbyChoice(state, localPlayerId, { callsign: typedCallsign });
+    startMatch(state);
+    dispatchEvents(state.events);
+  }
+}
+
+function joinRoom(roomId) {
+  audio.unlock();
+  releaseUiFocus();
+  const localP = state.players[localPlayerId];
+  if (wsConnected && ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: "joinRoom",
+      roomId,
+      team: localP?.team,
+      aircraftType: localP?.aircraftType,
+      callsign: localP?.callsign
+    }));
+  } else {
+    state.roomId = String(roomId || "ALPHA").trim().toUpperCase().slice(0, 12) || "ALPHA";
+    hud.showToast(`ROOM: ${state.roomId}`, "info", 1500);
+  }
+}
+
+function goBackToLobby() {
+  audio.unlock();
+  releaseUiFocus();
+  b52Aiming.active = false;
+  input.b52Aiming = false;
+  input.menuOpen = false;
+  hud.setMenuOpen(false);
+  seenEventKeys.clear();
+  if (wsConnected && ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "returnToLobby" }));
+  } else {
+    returnToLobby(state);
+    dispatchEvents(state.events);
+  }
+}
+
+function triggerRematch() {
+  if (!state.winner) return;
+  audio.unlock();
+  releaseUiFocus();
+  b52Aiming.active = false;
+  input.b52Aiming = false;
+  input.menuOpen = false;
+  hud.setMenuOpen(false);
+  seenEventKeys.clear();
+  if (wsConnected && ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "restartMatch" }));
+  } else {
+    resetMatch(state);
+  }
+}
+
+hud.bindLobbyHandlers({
+  onJoinRoom: joinRoom,
+  onSelectMode: (matchMode) => setMatchConfig({ matchMode }),
+  onToggleBots: () => setMatchConfig({ botsEnabled: !state.botsEnabled }),
+  onCallsignChange: (callsign) => applyLobbyChoice({ callsign }),
+  onSelectTeam: (team) => applyLobbyChoice({ team }),
+  onSelectAircraft: (aircraftType) => applyLobbyChoice({ aircraftType }),
+  onToggleReady: () => {
+    const cur = Boolean(state.players[localPlayerId]?.ready);
+    applyLobbyChoice({ ready: !cur });
+  },
+  onStartMatch: launchSortie,
+  onRematch: triggerRematch,
+  onReturnToLobby: goBackToLobby
+});
+
+function dispatchEvents(events) {
+  if (!events?.length) return;
+  const fresh = [];
+  for (const ev of events) {
+    const key = `${ev.type}:${ev.tick}:${Math.round(ev.x || 0)}:${ev.playerId || ev.bunkerId || ev.unitId || ""}`;
+    if (seenEventKeys.has(key)) continue;
+    seenEventKeys.add(key);
+    fresh.push(ev);
+  }
+  if (seenEventKeys.size > 400) {
+    const keep = Array.from(seenEventKeys).slice(-150);
+    seenEventKeys.clear();
+    for (const k of keep) seenEventKeys.add(k);
+  }
+  if (fresh.length) {
+    renderer.ingestEvents(fresh);
+    hud.ingestEvents(fresh);
+    audio.ingestEvents(fresh, state.players[localPlayerId]);
+  }
+}
 
 const input = new KeyboardInput((action) => {
+  audio.unlock();
+
+  if (action.type === "lobbyLaunch") {
+    launchSortie();
+    return;
+  }
+  if (action.type === "lobbyTeam") {
+    applyLobbyChoice({ team: action.team });
+    return;
+  }
+  if (action.type === "lobbyAircraft") {
+    applyLobbyChoice({ aircraftType: action.aircraftType });
+    return;
+  }
+  if (action.type === "returnToLobby") {
+    goBackToLobby();
+    return;
+  }
   if (action.type === "toggleMenu") {
     hud.setMenuOpen(action.open);
     return;
@@ -43,32 +211,38 @@ const input = new KeyboardInput((action) => {
     hud.setMenuOpen(false);
     return;
   }
+  if (action.type === "cycleMatchMode") {
+    const order = ["1v1", "2v2", "3v3"];
+    const nextMode = order[(order.indexOf(state.matchMode || "1v1") + 1) % order.length];
+    setMatchConfig({ matchMode: nextMode });
+    hud.showToast(`MODE: ${nextMode.toUpperCase()}`, "info", 1800);
+    return;
+  }
+  if (action.type === "toggleBots") {
+    const nextBots = !state.botsEnabled;
+    setMatchConfig({ botsEnabled: nextBots });
+    hud.showToast(`AI BOTS: ${nextBots ? "ON" : "OFF"}`, "info", 1800);
+    return;
+  }
+  if (action.type === "toggleAudio") {
+    const on = audio.toggle();
+    hud.showToast(on ? "AUDIO: ON" : "AUDIO: MUTED", "info", 1600);
+    return;
+  }
   if (action.type === "confirmB52") {
     if (!b52Aiming.active) return;
     if (wsConnected && ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "requisition", key: "8", targetX: b52Aiming.targetX }));
     } else {
       handlePlayerRequisition(state, localPlayerId, "8", { targetX: b52Aiming.targetX });
-      if (state.events.length) {
-        renderer.ingestEvents(state.events);
-        hud.ingestEvents(state.events);
-      }
+      dispatchEvents(state.events);
     }
     b52Aiming.active = false;
     input.b52Aiming = false;
     return;
   }
   if (action.type === "restartMatch") {
-    if (!state.winner) return;
-    b52Aiming.active = false;
-    input.b52Aiming = false;
-    input.menuOpen = false;
-    hud.setMenuOpen(false);
-    if (wsConnected && ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "restartMatch" }));
-    } else {
-      resetMatch(state);
-    }
+    triggerRematch();
     return;
   }
   if (action.type === "utility") {
@@ -76,6 +250,7 @@ const input = new KeyboardInput((action) => {
       ws.send(JSON.stringify({ type: "utility" }));
     } else {
       handlePlayerUtility(state, localPlayerId);
+      dispatchEvents(state.events);
     }
     return;
   }
@@ -86,6 +261,7 @@ const input = new KeyboardInput((action) => {
         ws.send(JSON.stringify({ type: "swapAircraft" }));
       } else {
         swapPlayerAircraft(state, localPlayerId);
+        dispatchEvents(state.events);
       }
       return;
     }
@@ -107,6 +283,7 @@ const input = new KeyboardInput((action) => {
       } else {
         const res = handlePlayerRequisition(state, localPlayerId, action.key);
         if (!res) hud.showToast("REQUISITION UNAVAILABLE", "info");
+        else dispatchEvents(state.events);
       }
       if (action.key === "9") {
         input.menuOpen = false;
@@ -129,17 +306,29 @@ function connectWebSocket() {
       if (data.type === "welcome") {
         localPlayerId = data.playerId;
         state = data.state;
+        if (Array.isArray(data.rooms)) roomsList = data.rooms;
+        seenEventKeys.clear();
+        lastSentInputJson = "";
+        inputHeartbeat = 0;
+        b52Aiming.active = false;
+        input.b52Aiming = false;
+        input.menuOpen = false;
+        hud.setMenuOpen(false);
         if (data.p47Config) {
           updateP47Config(data.p47Config);
         }
-        hud.setNetStatus(`ONLINE (${data.team.toUpperCase()})`, "#22c55e");
+        hud.setNetStatus(`ONLINE (${data.roomId || "ALPHA"} • ${data.team.toUpperCase()})`, "#22c55e");
       } else if (data.type === "p47Config") {
         updateP47Config(data.config);
       } else if (data.type === "snapshot") {
-        state = data.state;
+        if (Array.isArray(data.rooms)) roomsList = data.rooms;
+        state = reconcileClientState(state, data.state, localPlayerId);
+        const lp = state.players[localPlayerId];
+        if (lp) {
+          hud.setNetStatus(`ONLINE (${state.roomId || "ALPHA"} • ${lp.team.toUpperCase()})`, "#22c55e");
+        }
         if (state.events?.length) {
-          renderer.ingestEvents(state.events);
-          hud.ingestEvents(state.events);
+          dispatchEvents(state.events);
         }
       }
     };
@@ -164,31 +353,64 @@ let accumulator = 0;
 let lastTime = performance.now();
 
 function loop(now) {
-  const frameDt = Math.min(0.05, (now - lastTime) / 1000);
-  lastTime = now;
+  try {
+    const frameDt = Math.min(0.05, (now - lastTime) / 1000);
+    lastTime = now;
 
-  if (b52Aiming.active) {
-    const aimDir = (input.isRawKeyDown("ArrowRight") ? 1 : 0) - (input.isRawKeyDown("ArrowLeft") ? 1 : 0);
-    b52Aiming.targetX = Math.max(MIN_X + 800, Math.min(MAX_X - 800, b52Aiming.targetX + aimDir * 1800 * frameDt));
-  }
-
-  const snap = input.getSnapshot();
-  if (wsConnected && ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "input", input: snap }));
-  } else {
-    accumulator += frameDt;
-    while (accumulator >= DT) {
-      stepSimulation(state, { [localPlayerId]: snap });
-      if (state.events.length) {
-        renderer.ingestEvents(state.events);
-        hud.ingestEvents(state.events);
-      }
-      accumulator -= DT;
+    input.lobbyOpen = state.phase === "lobby";
+    if (state.phase === "lobby" || state.winner) {
+      b52Aiming.active = false;
+      input.b52Aiming = false;
+      input.menuOpen = false;
+      hud.setMenuOpen(false);
     }
-  }
 
-  renderer.render(state, localPlayerId, frameDt);
-  hud.update(state, localPlayerId, renderer.camX, b52Aiming);
+    if (prevPhase === "lobby" && state.phase === "playing") {
+      releaseUiFocus();
+      lastSentInputJson = "";
+      inputHeartbeat = 0;
+      const lp = state.players[localPlayerId];
+      if (lp) {
+        renderer.camX = lp.x + lp.dir * 130;
+        renderer.camY = Math.max(150, lp.y + 90);
+      }
+    }
+    prevPhase = state.phase;
+
+    if (b52Aiming.active) {
+      const aimDir = (input.isRawKeyDown("ArrowRight") ? 1 : 0) - (input.isRawKeyDown("ArrowLeft") ? 1 : 0);
+      b52Aiming.targetX = Math.max(MIN_X + 800, Math.min(MAX_X - 800, b52Aiming.targetX + aimDir * 1800 * frameDt));
+    }
+
+    if (state.phase === "playing") {
+      const snap = input.getSnapshot();
+      if (wsConnected && ws?.readyState === WebSocket.OPEN) {
+        const snapJson = JSON.stringify({ type: "input", input: snap });
+        if (snapJson !== lastSentInputJson || ++inputHeartbeat >= 6) {
+          lastSentInputJson = snapJson;
+          inputHeartbeat = 0;
+          ws.send(snapJson);
+        }
+      }
+
+      // Run fixed-timestep 60 Hz simulation locally (authoritative in offline mode, predictive between 20 Hz snapshots online)
+      accumulator += frameDt;
+      while (accumulator >= DT) {
+        stepSimulation(state, { [localPlayerId]: snap });
+        if (state.events.length) {
+          dispatchEvents(state.events);
+        }
+        accumulator -= DT;
+      }
+    } else {
+      accumulator = 0;
+    }
+
+    renderer.render(state, localPlayerId, frameDt, b52Aiming);
+    hud.update(state, localPlayerId, renderer.camX, b52Aiming, audio.enabled, roomsList);
+  } catch (err) {
+    console.error("Glory Days loop error:", err);
+  }
   requestAnimationFrame(loop);
 }
 

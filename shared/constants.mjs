@@ -381,3 +381,13 @@ export const DEFENSE_CONFIG = {
     samSpeed: 470
   }
 };
+
+// Phase 3 Multiplayer Match Modes & 20 Hz Network Snapshots
+export const SNAPSHOT_RATE = 20;
+export const SNAPSHOT_INTERVAL_TICKS = Math.round(TICK_RATE / SNAPSHOT_RATE); // 3 ticks (50ms)
+
+export const MATCH_MODES = {
+  "1v1": { id: "1v1", label: "1v1 Duel", teamSize: 1 },
+  "2v2": { id: "2v2", label: "2v2 Wingmen", teamSize: 2 },
+  "3v3": { id: "3v3", label: "3v3 Total War", teamSize: 3 }
+};

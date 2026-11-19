@@ -4,6 +4,7 @@ import {
   MIN_X,
   MISSILE_FUEL_DISTANCE,
   RENDER_HEIGHTS,
+  STRATEGIC_CONFIG,
   WORLD_WIDTH
 } from "../../shared/constants.mjs";
 
@@ -26,6 +27,7 @@ export class SpriteBattlefieldRenderer {
     this.enemyTinted = new Map();
     this.explosions = [];
     this.smokeTrail = [];
+    this.floatingLabels = [];
     this.camX = BASES.allied.padCenterX + 180;
     this.camY = 180;
     this.camZoom = 1.0;
@@ -83,6 +85,15 @@ export class SpriteBattlefieldRenderer {
           life: 0.35,
           maxLife: 0.35,
           rearHit: false
+        });
+      } else if (ev.type === "civilians_rescued") {
+        this.floatingLabels.push({
+          x: BASES[ev.team]?.padCenterX || 0,
+          y: 100,
+          text: `+$${ev.payout} RESCUED!`,
+          color: "#86efac",
+          life: 1.5,
+          maxLife: 1.5
         });
       }
     }
@@ -165,7 +176,7 @@ export class SpriteBattlefieldRenderer {
     };
   }
 
-  render(state, localPlayerId, dt) {
+  render(state, localPlayerId, dt, b52Aiming = null) {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const rect = this.canvas.getBoundingClientRect();
     const w = Math.max(320, Math.floor(rect.width));
@@ -391,6 +402,54 @@ export class SpriteBattlefieldRenderer {
         w,
         groundScreenY
       );
+
+      const { sx, sy } = this.worldToScreen(player.x, player.y + frame.height + 10, w, groundScreenY);
+      if (sx > -120 && sx < w + 120) {
+        ctx.textAlign = "center";
+        const isLocal = player.id === localPlayerId;
+        const label = isLocal ? "YOU" : (player.callsign || player.id.toUpperCase());
+        ctx.font = "800 10px ui-sans-serif, system-ui, sans-serif";
+        ctx.fillStyle = isLocal ? "#fde047" : player.team === "allied" ? "#93c5fd" : "#fca5a5";
+        ctx.fillText(label, sx, sy);
+
+        if (!isLocal) {
+          ctx.fillStyle = "rgba(0,0,0,0.55)";
+          ctx.fillRect(sx - 22, sy + 4, 44, 4);
+          ctx.fillStyle = player.team === "allied" ? "#3b82f6" : "#ef4444";
+          ctx.fillRect(sx - 22, sy + 4, 44 * (player.hp / player.maxHp), 4);
+        } else if (player.samWarningTicks > 0) {
+          if (Math.floor(state.time * 8) % 2 === 0) {
+            ctx.fillStyle = "#f87171";
+            ctx.font = "900 11px ui-sans-serif, system-ui, sans-serif";
+            ctx.fillText("⚠ SAM LOCK — PRESS Z", sx, sy - 14);
+          }
+        } else if (player.aircraftType === "p47" && !player.landedAtBase && player.flightStage >= 3) {
+          ctx.fillStyle = "#fbbf24";
+          ctx.font = "900 11px ui-sans-serif, system-ui, sans-serif";
+          ctx.fillText("⚠ STALL", sx, sy - 14);
+        }
+        ctx.textAlign = "left";
+      }
+    }
+
+    // 7a. B-52 Battlefield Target Zone Overlay
+    if (b52Aiming?.active) {
+      const half = STRATEGIC_CONFIG.b52_raid.stripWidth * 0.5;
+      const leftSx = this.worldToScreen(b52Aiming.targetX - half, 0, w, groundScreenY).sx;
+      const rightSx = this.worldToScreen(b52Aiming.targetX + half, 0, w, groundScreenY).sx;
+      ctx.fillStyle = "rgba(245, 158, 11, 0.14)";
+      ctx.fillRect(leftSx, 0, rightSx - leftSx, groundScreenY);
+      ctx.save();
+      ctx.strokeStyle = "#f59e0b";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 6]);
+      ctx.beginPath();
+      ctx.moveTo(leftSx, 0);
+      ctx.lineTo(leftSx, groundScreenY);
+      ctx.moveTo(rightSx, 0);
+      ctx.lineTo(rightSx, groundScreenY);
+      ctx.stroke();
+      ctx.restore();
     }
 
     // 7b. Strategic B-52 Bombers & Steerable V2 Missiles
@@ -532,6 +591,24 @@ export class SpriteBattlefieldRenderer {
         ctx.fillText("REAR HIT x1.75!", sx, sy - 22 - p * 18);
         ctx.textAlign = "left";
       }
+      ctx.globalAlpha = 1;
+    }
+
+    for (let i = this.floatingLabels.length - 1; i >= 0; i--) {
+      const fl = this.floatingLabels[i];
+      fl.life -= dt;
+      if (fl.life <= 0) {
+        this.floatingLabels.splice(i, 1);
+        continue;
+      }
+      const p = 1 - fl.life / fl.maxLife;
+      const { sx, sy } = this.worldToScreen(fl.x, fl.y + p * 45, w, groundScreenY);
+      ctx.globalAlpha = Math.max(0, 1 - p);
+      ctx.fillStyle = fl.color;
+      ctx.font = "900 13px ui-sans-serif, system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(fl.text, sx, sy);
+      ctx.textAlign = "left";
       ctx.globalAlpha = 1;
     }
   }

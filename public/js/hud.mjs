@@ -15,15 +15,43 @@ export class TacticalHud {
     this.elEnemyHq = document.getElementById("enemy-hq-bar");
     this.elFunds = document.getElementById("funds-label");
     this.elBunkerPips = document.getElementById("bunker-pips");
+    this.elModeBadge = document.getElementById("mode-badge");
+    this.elAudioBadge = document.getElementById("audio-badge");
     this.elPos = document.getElementById("pos-readout");
     this.elNet = document.getElementById("net-status");
     this.elBaseBanner = document.getElementById("base-banner");
     this.elTacticalAlert = document.getElementById("tactical-alert");
     this.elVictoryBanner = document.getElementById("victory-banner");
     this.elVictoryTitle = document.getElementById("victory-title");
+    this.elVictoryStats = document.getElementById("victory-stats");
     this.elVictorySub = document.getElementById("victory-sub");
+    this.elVictoryRematchBtn = document.getElementById("victory-rematch-btn");
+    this.elVictoryLobbyBtn = document.getElementById("victory-lobby-btn");
     this.elQDrawer = document.getElementById("q-drawer");
     this.elQGrid = document.getElementById("q-grid");
+
+    // Pre-Match Lobby Elements
+    this.elLobbyOverlay = document.getElementById("lobby-overlay");
+    this.elLobbyRooms = document.getElementById("lobby-rooms");
+    this.elLobbyRoomInput = document.getElementById("lobby-room-input");
+    this.elLobbyRoomJoin = document.getElementById("lobby-room-join");
+    this.elLobbyModeBtns = Array.from(document.querySelectorAll(".mode-btn"));
+    this.elLobbyBotsBtn = document.getElementById("lobby-bots-btn");
+    this.elLobbyCallsign = document.getElementById("lobby-callsign");
+    this.elLobbyPanelAllied = document.getElementById("lobby-panel-allied");
+    this.elLobbyPanelEnemy = document.getElementById("lobby-panel-enemy");
+    this.elLobbyJoinAllied = document.getElementById("lobby-join-allied");
+    this.elLobbyJoinEnemy = document.getElementById("lobby-join-enemy");
+    this.elLobbyAlliedRoster = document.getElementById("lobby-allied-roster");
+    this.elLobbyEnemyRoster = document.getElementById("lobby-enemy-roster");
+    this.elLobbyCraftHeli = document.getElementById("lobby-craft-heli");
+    this.elLobbyCraftP47 = document.getElementById("lobby-craft-p47");
+    this.elLobbyReadyBtn = document.getElementById("lobby-ready-btn");
+    this.elLobbyStartBtn = document.getElementById("lobby-start-btn");
+
+    this.lastRoomsSig = "";
+    this.lastRosterSig = "";
+    this.lobbyHandlers = null;
 
     this.elCraftName = document.getElementById("craft-name");
     this.elHpText = document.getElementById("hp-text");
@@ -93,7 +121,171 @@ export class TacticalHud {
     this.elNet.style.color = color;
   }
 
-  update(state, localPlayerId, camX, b52Aiming = null) {
+  bindLobbyHandlers(handlers) {
+    this.lobbyHandlers = handlers;
+    this.elLobbyRoomJoin?.addEventListener("click", () => {
+      const val = this.elLobbyRoomInput?.value.trim();
+      if (val) handlers.onJoinRoom?.(val);
+      this.elLobbyRoomJoin.blur();
+    });
+    this.elLobbyRoomInput?.addEventListener("keydown", (e) => {
+      if (e.code === "Enter") {
+        const val = this.elLobbyRoomInput.value.trim();
+        if (val) handlers.onJoinRoom?.(val);
+        this.elLobbyRoomInput.blur();
+      }
+    });
+    for (const btn of this.elLobbyModeBtns) {
+      btn.addEventListener("click", () => {
+        handlers.onSelectMode?.(btn.dataset.mode);
+        btn.blur();
+      });
+    }
+    this.elLobbyBotsBtn?.addEventListener("click", () => {
+      handlers.onToggleBots?.();
+      this.elLobbyBotsBtn.blur();
+    });
+    this.elLobbyCallsign?.addEventListener("change", () => {
+      handlers.onCallsignChange?.(this.elLobbyCallsign.value);
+    });
+    this.elLobbyCallsign?.addEventListener("keydown", (e) => {
+      if (e.code === "Enter") {
+        handlers.onCallsignChange?.(this.elLobbyCallsign.value);
+        this.elLobbyCallsign.blur();
+      }
+    });
+    this.elLobbyJoinAllied?.addEventListener("click", () => {
+      handlers.onSelectTeam?.("allied");
+      this.elLobbyJoinAllied.blur();
+    });
+    this.elLobbyJoinEnemy?.addEventListener("click", () => {
+      handlers.onSelectTeam?.("enemy");
+      this.elLobbyJoinEnemy.blur();
+    });
+    this.elLobbyCraftHeli?.addEventListener("click", () => {
+      handlers.onSelectAircraft?.("heli");
+      this.elLobbyCraftHeli.blur();
+    });
+    this.elLobbyCraftP47?.addEventListener("click", () => {
+      handlers.onSelectAircraft?.("p47");
+      this.elLobbyCraftP47.blur();
+    });
+    this.elLobbyReadyBtn?.addEventListener("click", () => {
+      handlers.onToggleReady?.();
+      this.elLobbyReadyBtn.blur();
+    });
+    this.elLobbyStartBtn?.addEventListener("click", () => {
+      handlers.onStartMatch?.();
+      this.elLobbyStartBtn.blur();
+    });
+    this.elVictoryRematchBtn?.addEventListener("click", () => {
+      handlers.onRematch?.();
+      this.elVictoryRematchBtn.blur();
+    });
+    this.elVictoryLobbyBtn?.addEventListener("click", () => {
+      handlers.onReturnToLobby?.();
+      this.elVictoryLobbyBtn.blur();
+    });
+  }
+
+  escapeHtml(text) {
+    return String(text || "").replace(/[&<>"']/g, (ch) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    }[ch]));
+  }
+
+  updateLobby(state, localPlayerId, roomsList = []) {
+    if (!this.elLobbyOverlay) return;
+    const isLobby = state.phase === "lobby";
+    this.elLobbyOverlay.style.display = isLobby ? "flex" : "none";
+    if (!isLobby) {
+      if (document.activeElement && this.elLobbyOverlay.contains(document.activeElement)) {
+        document.activeElement.blur();
+      }
+      return;
+    }
+
+    const activeRoomId = state.roomId || "ALPHA";
+    const rooms = roomsList.length
+      ? roomsList
+      : [{ id: activeRoomId, phase: state.phase, matchMode: state.matchMode, humanCount: Object.values(state.players).filter((p) => !p.isBot).length }];
+
+    const roomsSig = rooms.map((r) => `${r.id}:${r.humanCount}:${r.phase}:${r.id === activeRoomId}`).join("|");
+    if (roomsSig !== this.lastRoomsSig && this.elLobbyRooms) {
+      this.lastRoomsSig = roomsSig;
+      this.elLobbyRooms.innerHTML = "";
+      for (const r of rooms) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `lobby-btn ${r.id === activeRoomId ? "active" : ""}`;
+        btn.textContent = `${r.id} (${r.humanCount})`;
+        btn.addEventListener("click", () => {
+          this.lobbyHandlers?.onJoinRoom?.(r.id);
+          btn.blur();
+        });
+        this.elLobbyRooms.appendChild(btn);
+      }
+    }
+
+    for (const btn of this.elLobbyModeBtns) {
+      btn.classList.toggle("active", btn.dataset.mode === state.matchMode);
+    }
+    if (this.elLobbyBotsBtn) {
+      this.elLobbyBotsBtn.textContent = `AI BOTS: ${state.botsEnabled ? "ON" : "OFF"}`;
+      this.elLobbyBotsBtn.classList.toggle("active", Boolean(state.botsEnabled));
+    }
+
+    const localP = state.players[localPlayerId];
+    if (this.elLobbyCallsign && document.activeElement !== this.elLobbyCallsign && localP) {
+      this.elLobbyCallsign.value = localP.callsign || "";
+    }
+
+    this.elLobbyPanelAllied?.classList.toggle("selected-allied", localP?.team === "allied");
+    this.elLobbyPanelEnemy?.classList.toggle("selected-enemy", localP?.team === "enemy");
+    this.elLobbyJoinAllied?.classList.toggle("active", localP?.team === "allied");
+    this.elLobbyJoinEnemy?.classList.toggle("active", localP?.team === "enemy");
+    this.elLobbyCraftHeli?.classList.toggle("selected-craft", localP?.aircraftType === "heli");
+    this.elLobbyCraftP47?.classList.toggle("selected-craft", localP?.aircraftType === "p47");
+
+    if (this.elLobbyReadyBtn) {
+      const isReady = Boolean(localP?.ready);
+      this.elLobbyReadyBtn.textContent = isReady ? "READY ✓" : "READY";
+      this.elLobbyReadyBtn.classList.toggle("ready-on", isReady);
+    }
+
+    const rosterSig = Object.values(state.players)
+      .map((p) => `${p.id}:${p.team}:${p.aircraftType}:${p.callsign}:${p.isBot}:${p.ready}`)
+      .join("|");
+    if (rosterSig !== this.lastRosterSig) {
+      this.lastRosterSig = rosterSig;
+      const renderRoster = (team, el) => {
+        if (!el) return;
+        const members = Object.values(state.players).filter((p) => p.team === team);
+        if (!members.length) {
+          el.innerHTML = `<div class="roster-slot" style="color:#64748b;">No pilots assigned</div>`;
+          return;
+        }
+        el.innerHTML = members
+          .map((p) => {
+            const isLocal = p.id === localPlayerId;
+            const tag = isLocal ? "YOU" : p.isBot ? "AI BOT" : p.ready ? "READY" : "PILOT";
+            const tagColor = isLocal ? "#fde047" : p.isBot ? "#94a3b8" : p.ready ? "#4ade80" : "#cbd5e1";
+            const craft = p.aircraftType === "p47" ? "P-47" : "HELI";
+            return `<div class="roster-slot"><span><strong>${this.escapeHtml(p.callsign || p.id)}</strong> <span style="color:#94a3b8;">(${craft})</span></span><span style="color:${tagColor};font-weight:800;font-size:10px;">${tag}</span></div>`;
+          })
+          .join("");
+      };
+      renderRoster("allied", this.elLobbyAlliedRoster);
+      renderRoster("enemy", this.elLobbyEnemyRoster);
+    }
+  }
+
+  update(state, localPlayerId, camX, b52Aiming = null, audioEnabled = true, roomsList = []) {
+    this.updateLobby(state, localPlayerId, roomsList);
     const p = state.players[localPlayerId];
     this.elAlliedHq.style.width = `${(state.hqs.allied.hp / state.hqs.allied.maxHp) * 100}%`;
     this.elEnemyHq.style.width = `${(state.hqs.enemy.hp / state.hqs.enemy.maxHp) * 100}%`;
@@ -103,6 +295,15 @@ export class TacticalHud {
     this.elFunds.textContent = `$${Math.floor(funds)}`;
     this.elTeamBadge.textContent = team.toUpperCase();
     this.elTeamBadge.style.color = team === "allied" ? "#60a5fa" : "#f87171";
+
+    if (this.elModeBadge) {
+      const modeLabel = (state.matchMode || "1v1").toUpperCase();
+      this.elModeBadge.textContent = `${modeLabel} • BOTS ${state.botsEnabled ? "ON" : "OFF"}`;
+    }
+    if (this.elAudioBadge) {
+      this.elAudioBadge.textContent = audioEnabled ? "SFX ON" : "SFX OFF";
+      this.elAudioBadge.style.color = audioEnabled ? "#22c55e" : "#94a3b8";
+    }
 
     // Bunker ownership pips
     if (this.elBunkerPips.childElementCount !== state.bunkers.length) {
@@ -173,6 +374,7 @@ export class TacticalHud {
     if (this.elTacticalAlert) {
       let alertText = "";
       let alertClass = "";
+      const p47Stalling = p?.aircraftType === "p47" && p?.alive && !p?.landedAtBase && (p?.flightStage >= 3 || (p?.y < 55 && p?.vy < -45));
       if (b52Aiming?.active) {
         alertText = `B-52 TARGETING (X: ${Math.round(b52Aiming.targetX)}m) — ←/→ MOVE • S/ENTER LAUNCH • Q/ESC CANCEL`;
         alertClass = "info";
@@ -181,6 +383,9 @@ export class TacticalHud {
         alertClass = "info";
       } else if (p?.samWarningTicks > 0) {
         alertText = "SAM LOCK — PRESS Z FOR FLARES!";
+        alertClass = "";
+      } else if (p47Stalling) {
+        alertText = "STALL / DESCENDING — HOLD ←/→ THRUST";
         alertClass = "";
       } else if (this.toastMsg && performance.now() < this.toastUntil) {
         alertText = this.toastMsg;
@@ -196,13 +401,30 @@ export class TacticalHud {
       }
     }
 
-    // Match Victory / Rematch Overlay
+    // Match Victory / Scoreboard & Rematch Overlay
     if (this.elVictoryBanner) {
       if (state.winner) {
         this.elVictoryBanner.style.display = "block";
         this.elVictoryTitle.textContent = `${state.winner.toUpperCase()} VICTORY`;
         this.elVictoryTitle.style.color = state.winner === "allied" ? "#60a5fa" : "#f87171";
-        this.elVictorySub.innerHTML = `${state.winner === "allied" ? "ENEMY" : "ALLIED"} HQ DESTROYED • PRESS <span class="kbd">R</span> FOR REMATCH`;
+        if (this.elVictoryStats) {
+          const secs = Math.max(0, Math.floor(state.time || 0));
+          const mins = Math.floor(secs / 60);
+          const rem = String(secs % 60).padStart(2, "0");
+          const alliedBunkers = state.bunkers.filter((b) => b.owner === "allied").length;
+          const enemyBunkers = state.bunkers.filter((b) => b.owner === "enemy").length;
+          const stA = state.stats?.allied || { unitsBought: 0, civiliansRescued: 0, fundsEarned: 500 };
+          const stE = state.stats?.enemy || { unitsBought: 0, civiliansRescued: 0, fundsEarned: 500 };
+          this.elVictoryStats.innerHTML = `
+            <div><span class="v-stat-label">Duration:</span> <span class="v-stat-val">${mins}:${rem} (${(state.matchMode || "1v1").toUpperCase()})</span></div>
+            <div><span class="v-stat-label">Bunkers Held:</span> <span class="v-stat-val">${alliedBunkers} Allied / ${enemyBunkers} Enemy</span></div>
+            <div><span class="v-stat-label">Units Deployed:</span> <span class="v-stat-val">${stA.unitsBought} / ${stE.unitsBought}</span></div>
+            <div><span class="v-stat-label">Civilians Rescued:</span> <span class="v-stat-val">${stA.civiliansRescued} / ${stE.civiliansRescued}</span></div>
+            <div><span class="v-stat-label">Allied Funds Earned:</span> <span class="v-stat-val">$${Math.round(stA.fundsEarned)}</span></div>
+            <div><span class="v-stat-label">Enemy Funds Earned:</span> <span class="v-stat-val">$${Math.round(stE.fundsEarned)}</span></div>
+          `;
+        }
+        this.elVictorySub.innerHTML = `${state.winner === "allied" ? "ENEMY" : "ALLIED"} HQ DESTROYED • PRESS <span class="kbd">R</span> FOR REMATCH • <span class="kbd">L</span> LOBBY`;
       } else {
         this.elVictoryBanner.style.display = "none";
       }
