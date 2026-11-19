@@ -14,6 +14,7 @@ import {
   removePlayer,
   resetMatch,
   returnToLobby,
+  setAutoProduction,
   setPlayerLobbyChoice,
   spawnPlayerP47Test,
   startMatch,
@@ -170,7 +171,13 @@ function getOrCreateRoom(roomId) {
   if (!rooms.has(id)) {
     rooms.set(id, {
       id,
-      state: createInitialState({ phase: "lobby", roomId: id, matchMode: "1v1", botsEnabled: true }),
+      state: createInitialState({
+        phase: "lobby",
+        roomId: id,
+        matchMode: "1v1",
+        botsEnabled: true,
+        includePracticeTargets: false
+      }),
       clients: new Map(),
       pendingEvents: [],
       snapshotTickCounter: 0
@@ -408,9 +415,19 @@ server.on("upgrade", (req, socket) => {
             if (cmd.matchMode || typeof cmd.botsEnabled === "boolean") {
               configureMatch(room.state, { matchMode: cmd.matchMode, botsEnabled: cmd.botsEnabled });
             }
+            if (typeof cmd.autoProduction === "boolean") {
+              setAutoProduction(room.state, activeClient.team, cmd.autoProduction);
+            }
             startMatch(room.state);
             room.pendingEvents = [];
             room.snapshotTickCounter = 0;
+            broadcastRoomSnapshot(room, room.state.events);
+          } else if (cmd.type === "setAutoProduction") {
+            const targetTeam = (cmd.team === "allied" || cmd.team === "enemy") ? cmd.team : activeClient.team;
+            const nextEnabled = typeof cmd.enabled === "boolean"
+              ? cmd.enabled
+              : !Boolean(room.state.autoProduction?.[targetTeam]);
+            setAutoProduction(room.state, targetTeam, nextEnabled);
             broadcastRoomSnapshot(room, room.state.events);
           } else if (cmd.type === "returnToLobby") {
             returnToLobby(room.state);
@@ -484,7 +501,11 @@ setInterval(() => {
       }
       room.snapshotTickCounter += 1;
       const immediate = room.pendingEvents.some(
-        (e) => e.type === "match_won" || e.type === "match_reset" || e.type === "match_configured"
+        (e) =>
+          e.type === "match_won" ||
+          e.type === "match_reset" ||
+          e.type === "match_configured" ||
+          e.type === "auto_production_toggled"
       );
       if (immediate || room.snapshotTickCounter >= SNAPSHOT_INTERVAL_TICKS) {
         room.snapshotTickCounter = 0;

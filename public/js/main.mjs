@@ -8,6 +8,7 @@ import {
   reconcileClientState,
   resetMatch,
   returnToLobby,
+  setAutoProduction,
   setPlayerLobbyChoice,
   startMatch,
   stepSimulation,
@@ -32,7 +33,7 @@ try {
   // Ignore invalid or inaccessible storage
 }
 
-let state = createInitialState({ phase: "lobby", matchMode: "1v1", botsEnabled: true });
+let state = createInitialState({ phase: "lobby", matchMode: "1v1", botsEnabled: true, includePracticeTargets: false });
 let localPlayerId = "local_p1";
 addPlayer(state, localPlayerId, "allied", "heli", { isBot: false, callsign: "YOU" });
 syncBotPlayers(state);
@@ -73,6 +74,20 @@ function setMatchConfig(cfg) {
   }
 }
 
+function toggleAutoProduction() {
+  audio.unlock();
+  const lp = state.players[localPlayerId];
+  const team = lp?.team || "allied";
+  const nextEnabled = !Boolean(state.autoProduction?.[team]);
+  if (wsConnected && ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "setAutoProduction", team, enabled: nextEnabled }));
+  } else {
+    setAutoProduction(state, team, nextEnabled);
+    dispatchEvents(state.events);
+  }
+  hud.showToast(`AUTO TROOPS: ${nextEnabled ? "ON (TANKS & AA)" : "OFF"}`, "info", 1800);
+}
+
 function launchSortie() {
   audio.unlock();
   releaseUiFocus();
@@ -86,7 +101,8 @@ function launchSortie() {
       aircraftType: localP?.aircraftType,
       callsign: typedCallsign || localP?.callsign,
       matchMode: state.matchMode,
-      botsEnabled: state.botsEnabled
+      botsEnabled: state.botsEnabled,
+      autoProduction: Boolean(state.autoProduction?.[localP?.team || "allied"])
     }));
   } else {
     if (typedCallsign) setPlayerLobbyChoice(state, localPlayerId, { callsign: typedCallsign });
@@ -149,6 +165,7 @@ hud.bindLobbyHandlers({
   onJoinRoom: joinRoom,
   onSelectMode: (matchMode) => setMatchConfig({ matchMode }),
   onToggleBots: () => setMatchConfig({ botsEnabled: !state.botsEnabled }),
+  onToggleAutoProduction: toggleAutoProduction,
   onCallsignChange: (callsign) => applyLobbyChoice({ callsign }),
   onSelectTeam: (team) => applyLobbyChoice({ team }),
   onSelectAircraft: (aircraftType) => applyLobbyChoice({ aircraftType }),
@@ -222,6 +239,10 @@ const input = new KeyboardInput((action) => {
     const nextBots = !state.botsEnabled;
     setMatchConfig({ botsEnabled: nextBots });
     hud.showToast(`AI BOTS: ${nextBots ? "ON" : "OFF"}`, "info", 1800);
+    return;
+  }
+  if (action.type === "toggleAutoProduction") {
+    toggleAutoProduction();
     return;
   }
   if (action.type === "toggleAudio") {

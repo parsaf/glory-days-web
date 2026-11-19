@@ -218,6 +218,13 @@ export const BUNKER_INCOME_PER_SEC = 6;
 export const CIVILIAN_KILL_PENALTY = 100;
 export const VILLAGE_X_POSITIONS = [-2700, -900, 900, 2700];
 
+// Ground Troop Auto-Production, Crossfire & Damage Degradation
+export const AUTO_PRODUCTION_PATTERN = ["mbt", "mbt", "aa_truck", "mbt"];
+export const AUTO_PRODUCTION_COOLDOWN_TICKS = 90;
+export const AMBULANCE_CROSSFIRE_RATIO = 0.5;
+export const GROUND_DAMAGE_MIN_SPEED_FACTOR = 0.45;
+export const GROUND_DAMAGE_MAX_COOLDOWN_MULT = 2.0;
+
 // Phase 2 Ground Unit Configurations
 export const UNIT_CONFIG = {
   infantry: {
@@ -246,14 +253,16 @@ export const UNIT_CONFIG = {
     hp: 140,
     maxHp: 140,
     speed: 78,
-    flakRange: 680,
-    flakDamage: 12,
-    flakCooldownTicks: 18,
-    flakSpeed: 760,
-    samRange: 920,
-    samDamage: 68,
-    samCooldownTicks: 135,
-    samSpeed: 460
+    visualRange: 750,
+    samRange: 750,
+    samDamage: 65,
+    samCooldownTicks: 78,
+    samMaxFlightTime: 2.6,
+    samSpeeds: { slow: 320, medium: 520, fast: 760 },
+    groundRange: 210,
+    groundDamage: 9,
+    groundFireCooldownTicks: 26,
+    groundProjSpeed: 620
   },
   apc: {
     key: "3",

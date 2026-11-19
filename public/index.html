@@ -506,6 +506,7 @@
 
         <div class="hud-pill" id="tug-strip">
           <span id="mode-badge" style="color:#fbbf24;font-size:11px;font-weight:800;">1V1 • BOTS ON</span>
+          <span id="autoprod-badge" style="color:#94a3b8;font-size:11px;font-weight:800;">AUTO OFF</span>
           <span style="color:var(--muted);font-size:11px;">CHECKPOINTS</span>
           <div id="bunker-pips" style="display:flex;gap:4px;"></div>
           <span id="pos-readout" style="font-family:ui-monospace,monospace;font-size:11px;color:#cbd5e1;margin-left:6px;">X: -5320m</span>
@@ -556,6 +557,7 @@
               <button class="lobby-btn mode-btn" data-mode="2v2" type="button">2v2 Wingmen</button>
               <button class="lobby-btn mode-btn" data-mode="3v3" type="button">3v3 Total War</button>
               <button id="lobby-bots-btn" class="lobby-btn" type="button">AI BOTS: ON</button>
+              <button id="lobby-autoprod-btn" class="lobby-btn" type="button">AUTO PROD: OFF</button>
             </div>
             <div class="lobby-row">
               <span style="font-size:11px;color:#94a3b8;font-weight:700;">CALLSIGN:</span>
@@ -601,7 +603,7 @@
 
           <div class="lobby-footer">
             <div style="font-size:11px;color:#94a3b8;">
-              <span class="kbd">←</span>/<span class="kbd">→</span> Team • <span class="kbd">1</span>/<span class="kbd">2</span> Aircraft • <span class="kbd">M</span> Mode • <span class="kbd">B</span> Bots • <span class="kbd">Enter</span> Launch
+              <span class="kbd">←</span>/<span class="kbd">→</span> Team • <span class="kbd">1</span>/<span class="kbd">2</span> Aircraft • <span class="kbd">M</span> Mode • <span class="kbd">B</span> Bots • <span class="kbd">T</span> Auto Prod • <span class="kbd">Enter</span> Launch
             </div>
             <div class="lobby-row">
               <button id="lobby-ready-btn" class="lobby-btn" type="button">READY</button>
@@ -614,6 +616,7 @@
       <div id="q-drawer">
         <div id="q-header">
           <span>REQUISITION &amp; BASE MENU (Press 1–9 or 0)</span>
+          <span id="q-autoprod-status" style="color:#94a3b8;font-size:11px;font-weight:700;">T: AUTO PROD OFF</span>
           <span style="color:var(--muted);font-weight:500;">Press <span class="kbd">Q</span> to close</span>
         </div>
         <div id="q-grid"></div>
@@ -661,11 +664,11 @@
         <div class="row"><span style="color:var(--muted);">Primary / Rocket</span><span><span class="kbd">A</span> Gun • <span class="kbd">S</span> Bomb/Rocket</span></div>
         <div class="row"><span style="color:var(--muted);">Flares / Troops</span><span><span class="kbd">Z</span> Flares • <span class="kbd">E</span> Drop/Load</span></div>
         <div class="row"><span style="color:var(--muted);">Purchase / Swap</span><span><span class="kbd">Q</span> Menu → <span class="kbd">1–9</span> / <span class="kbd">0</span></span></div>
-        <div class="row"><span style="color:var(--muted);">Match / Lobby</span><span><span class="kbd">M</span> Mode • <span class="kbd">B</span> Bots • <span class="kbd">L</span> Lobby • <span class="kbd">N</span> <span id="audio-badge" style="color:#22c55e;font-weight:700;">SFX ON</span></span></div>
+        <div class="row"><span style="color:var(--muted);">Match / Lobby</span><span><span class="kbd">M</span> Mode • <span class="kbd">B</span> Bots • <span class="kbd">T</span> Auto • <span class="kbd">L</span> Lobby • <span class="kbd">N</span> <span id="audio-badge" style="color:#22c55e;font-weight:700;">SFX ON</span></span></div>
       </div>
     </div>
   </div>
 
-  <script type="module" src="/js/main.mjs?v=4"></script>
+  <script type="module" src="/js/main.mjs?v=5"></script>
 </body>
 </html>

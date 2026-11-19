@@ -65,6 +65,10 @@ export class KeyboardInput {
           this.onAction({ type: "toggleBots" });
           return;
         }
+        if (code === "KeyT") {
+          this.onAction({ type: "toggleAutoProduction" });
+          return;
+        }
         if (code === "KeyN") {
           this.onAction({ type: "toggleAudio" });
           return;
@@ -111,6 +115,11 @@ export class KeyboardInput {
 
       if (code === "KeyB") {
         this.onAction({ type: "toggleBots" });
+        return;
+      }
+
+      if (code === "KeyT") {
+        this.onAction({ type: "toggleAutoProduction" });
         return;
       }
 
@@ -176,6 +185,7 @@ export class KeyboardInput {
       a: "KeyA", A: "KeyA",
       s: "KeyS", S: "KeyS",
       z: "KeyZ", Z: "KeyZ",
+      t: "KeyT", T: "KeyT",
       m: "KeyM", M: "KeyM",
       b: "KeyB", B: "KeyB",
       n: "KeyN", N: "KeyN",

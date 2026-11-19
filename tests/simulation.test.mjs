@@ -3,6 +3,8 @@ import test from "node:test";
 import { SpriteBattlefieldRenderer } from "../public/js/renderer.mjs";
 import {
   AIRCRAFT_CONFIG,
+  AUTO_PRODUCTION_COOLDOWN_TICKS,
+  AUTO_PRODUCTION_PATTERN,
   BASE_INCOME_PER_SEC,
   BASES,
   BUNKER_INCOME_PER_SEC,
@@ -12,20 +14,26 @@ import {
   CIVILIAN_KILL_PENALTY,
   MISSILE_FUEL_DISTANCE,
   SLOW_FIRE_INTERVAL,
-  STRATEGIC_CONFIG
+  STRATEGIC_CONFIG,
+  UNIT_CONFIG
 } from "../shared/constants.mjs";
 import {
   addPlayer,
   calculateCivilianPayout,
+  computeBotPilotInput,
   configureMatch,
   createInitialState,
   createNetworkSnapshot,
+  getGroundUnitFireCooldown,
+  getGroundUnitSpeedMultiplier,
   handlePlayerRequisition,
   handlePlayerUtility,
+  planSamInterception,
   reconcileClientState,
   removePlayer,
   resetMatch,
   returnToLobby,
+  setAutoProduction,
   setPlayerLobbyChoice,
   spawnCivilian,
   spawnGroundUnit,
@@ -666,7 +674,7 @@ test("Phase 2: Requisition [1] Infantry captures bunkers & fights; [3] APC deplo
   assert.equal(enemyInf.length, 2, "Destroyed APC deploys 2 infantry");
 });
 
-test("Phase 2: [2] AA Flak/SAM Truck triggers SAM LOCK, Z Flares spoof SAMs, and Base AA defends HQ", () => {
+test("Phase 2: [2] AA Flak/SAM Truck fires unguided predictive SAMs, while Base AA fires guided SAMs spoofed by Z Flares", () => {
   const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
   const allied = addPlayer(state, "p1", "allied", "p47");
   allied.x = 500;
@@ -677,38 +685,45 @@ test("Phase 2: [2] AA Flak/SAM Truck triggers SAM LOCK, Z Flares spoof SAMs, and
   const aa = spawnGroundUnit(state, "enemy", "2", 950);
   assert.ok(aa);
 
-  // Step until enemy AA launches SAM + triggers SAM warning
-  let samFired = false;
+  // Step until enemy AA launches unguided SAM + triggers incoming AA warning
+  let aaSam = null;
   for (let t = 0; t < 20; t++) {
     stepSimulation(state, { p1: { right: true } });
-    if (state.projectiles.some((pr) => pr.kind === "sam_missile")) {
-      samFired = true;
-      break;
-    }
+    aaSam = state.projectiles.find((pr) => pr.kind === "sam_missile" && pr.guided === false);
+    if (aaSam) break;
   }
-  assert.equal(samFired, true, "Enemy AA truck fires homing SAM missile at airborne aircraft");
-  assert.ok(allied.samWarningTicks > 0, "Targeted aircraft receives SAM LOCK warning");
+  assert.ok(aaSam, "Enemy AA truck fires unguided straight-line SAM missile at airborne aircraft");
+  assert.ok(allied.aaWarningTicks > 0, "Targeted aircraft receives incoming AA SAM warning");
 
-  // Deploy Z flares -> SAM locks onto decoy flare and detonates harmlessly
-  const hpBeforeFlare = allied.hp;
+  // Deploying Z flares does NOT spoof AA truck's unguided SAM
   stepSimulation(state, { p1: { fireFlare: true } });
-  let spoofed = false;
-  for (let t = 0; t < 90; t++) {
-    stepSimulation(state, { p1: { right: true } });
-    if (state.events.some((e) => e.type === "sam_spoofed")) spoofed = true;
-  }
-  assert.equal(spoofed, true, "Active Z flares spoof incoming SAM missile");
-  assert.ok(allied.hp >= hpBeforeFlare - 15, "SAM never struck aircraft after flare spoof");
+  assert.equal(aaSam.spoofedByFlareId, null, "Unguided AA SAM cannot be spoofed by flares");
 
-  // Enemy Base AA protects enemy HQ against loitering allied aircraft
-  const intruder = addPlayer(state, "p2", "allied", "heli");
+  // Enemy Base AA protects enemy HQ with guided SAMs that trigger SAM LOCK and are spoofed by Z flares
+  const baseState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const intruder = addPlayer(baseState, "p2", "allied", "heli");
   intruder.x = BASES.enemy.hqX - 500;
   intruder.y = 260;
-  stepSimulation(state, { p2: {} });
+  stepSimulation(baseState, { p2: {} });
   assert.ok(
-    state.projectiles.some((pr) => pr.team === "enemy" && (pr.kind === "sam_missile" || pr.kind === "flak_shell")),
-    "Base AA fires SAM/Flak at enemy aircraft approaching Base HQ"
+    baseState.projectiles.some((pr) => pr.team === "enemy" && pr.kind === "sam_missile" && pr.guided === true),
+    "Base AA fires guided SAM at enemy aircraft approaching Base HQ"
   );
+  assert.ok(intruder.samWarningTicks > 0, "Base AA guided SAM triggers SAM LOCK warning");
+
+  const hpBeforeFlare = intruder.hp;
+  stepSimulation(baseState, { p2: { fireFlare: true } });
+  let spoofed = false;
+  let maxSingleTickDrop = 0;
+  for (let t = 0; t < 90; t++) {
+    const prevHp = intruder.hp;
+    stepSimulation(baseState, { p2: {} });
+    maxSingleTickDrop = Math.max(maxSingleTickDrop, prevHp - intruder.hp);
+    if (baseState.events.some((e) => e.type === "sam_spoofed")) spoofed = true;
+  }
+  assert.equal(spoofed, true, "Active Z flares spoof Base AA guided SAM missile");
+  assert.ok(maxSingleTickDrop < 75, "Guided SAM (75 dmg) never struck aircraft after flare spoof");
+  assert.ok(intruder.hp <= hpBeforeFlare);
 });
 
 test("Phase 2: [4] MBT, [5] Howitzer rear-hit 1.75x & standoff, [7] Supply Truck +25 HP/s aura, Bunker defense", () => {
@@ -1127,7 +1142,7 @@ test("Network snapshots carry all state stepSimulation needs so client-side pred
 
   const wire = () => JSON.parse(JSON.stringify(createNetworkSnapshot(server)));
   let client = wire();
-  for (const key of ["baseAa", "nextEntityId", "botThinkCooldown"]) {
+  for (const key of ["baseAa", "nextEntityId", "botThinkCooldown", "autoProduction", "autoProdCooldown", "autoProdCounter"]) {
     assert.ok(key in client, `snapshot includes ${key}`);
   }
 
@@ -1139,4 +1154,332 @@ test("Network snapshots carry all state stepSimulation needs so client-side pred
   }
   assert.ok(client.players.p1.y > 20, "Predicted helicopter climbs on client");
   assert.ok(client.players.p1.x > BASES.allied.padCenterX + 50, "Predicted helicopter moves forward on client");
+});
+
+test("Auto troop production spawns primarily tanks and some AA flaks, works without bots, and toggles off", () => {
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: false });
+  addPlayer(state, "p1", "allied", "heli");
+  state.teamFunds.allied = 2500;
+
+  // Off by default -> zero auto spawns
+  for (let t = 0; t < 120; t++) stepSimulation(state, { p1: {} });
+  assert.equal(state.units.length, 0, "No auto-produced units spawn when autoProduction is off");
+
+  // Enable auto production for allied -> follows AUTO_PRODUCTION_PATTERN (3:1 tanks to AA)
+  assert.equal(setAutoProduction(state, "allied", true), true);
+  assert.ok(state.events.some((e) => e.type === "auto_production_toggled" && e.team === "allied" && e.enabled === true));
+
+  const spawnedKinds = [];
+  for (let t = 0; t < 3 * AUTO_PRODUCTION_COOLDOWN_TICKS + 10; t++) {
+    stepSimulation(state, { p1: {} });
+    for (const ev of state.events) {
+      if (ev.type === "unit_requisitioned" && ev.auto && ev.team === "allied") {
+        spawnedKinds.push(ev.unitKind);
+      }
+    }
+  }
+
+  assert.equal(spawnedKinds.length, 4, "Produces 4 units across 4 cooldown cycles");
+  assert.deepEqual(spawnedKinds, ["main_battle_tank", "main_battle_tank", "aa_flak_truck", "main_battle_tank"]);
+  assert.equal(spawnedKinds.filter((k) => k === "main_battle_tank").length, 3);
+  assert.equal(spawnedKinds.filter((k) => k === "aa_flak_truck").length, 1);
+
+  // Disable auto production -> stops spawning even with remaining funds
+  const countBeforeOff = state.units.length;
+  state.teamFunds.allied = 2500;
+  assert.equal(setAutoProduction(state, "allied", false), false);
+  for (let t = 0; t < 180; t++) stepSimulation(state, { p1: {} });
+  assert.equal(state.units.length, countBeforeOff, "Stopping auto production halts automatic spawning");
+});
+
+test("AA Flak Truck SAMs respect visual range, travel in strict straight lines, predict intercepts, and select 3 speed profiles", () => {
+  // 1. Visual range cutoff (> 750m -> no launch)
+  const outState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const outHeli = addPlayer(outState, "p1", "allied", "heli");
+  outHeli.x = -500;
+  outHeli.y = 300;
+  spawnGroundUnit(outState, "enemy", "2", 500); // dist > 1000m > 750m
+  for (let t = 0; t < 90; t++) stepSimulation(outState, { p1: {} });
+  assert.equal(outState.projectiles.filter((p) => p.kind === "sam_missile").length, 0, "No SAM launched outside visual LOS range");
+
+  // 2. Profile selection across slow / medium / fast targets
+  const slowTarget = { x: -300, y: 220, vx: 60, vy: 0, ref: { turnTimer: 0 } };
+  const slowPlan = planSamInterception(0, 34, slowTarget, null, { damaged: false });
+  assert.ok(slowPlan);
+  assert.equal(slowPlan.profile, "slow");
+  assert.equal(slowPlan.speed, UNIT_CONFIG.aa_truck.samSpeeds.slow);
+
+  const medTarget = { x: -350, y: 260, vx: 280, vy: 0, ref: { turnTimer: 0 } };
+  const medPlan = planSamInterception(0, 34, medTarget, null, { damaged: false });
+  assert.ok(medPlan);
+  assert.equal(medPlan.profile, "medium");
+  assert.equal(medPlan.speed, UNIT_CONFIG.aa_truck.samSpeeds.medium);
+
+  const fastTarget = { x: -450, y: 300, vx: 520, vy: 0, ref: { turnTimer: 0 } };
+  const fastPlan = planSamInterception(0, 34, fastTarget, null, { damaged: false });
+  assert.ok(fastPlan);
+  assert.equal(fastPlan.profile, "fast");
+  assert.equal(fastPlan.speed, UNIT_CONFIG.aa_truck.samSpeeds.fast);
+
+  // 3. Straight-line trajectory & predictive intercept hit on moving helicopter
+  const hitState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const movingHeli = addPlayer(hitState, "p1", "allied", "heli");
+  movingHeli.x = -420;
+  movingHeli.y = 220;
+  movingHeli.vx = 95;
+  movingHeli.vy = 0;
+  const enemyAa = spawnGroundUnit(hitState, "enemy", "2", 120);
+  enemyAa.speed = 0; // hold position to test pure intercept geometry
+
+  stepSimulation(hitState, { p1: {} });
+  const sam = hitState.projectiles.find((p) => p.kind === "sam_missile");
+  assert.ok(sam, "AA truck launches predictive SAM inside visual range");
+  assert.equal(sam.guided, false);
+  const initVx = sam.vx;
+  const initVy = sam.vy;
+  const startX = sam.x;
+  const startY = sam.y;
+  const hpStart = movingHeli.hp;
+
+  // Keep helicopter moving steadily at vx=95, vy=0 (bypass idle sink by tiny collective) and confirm straight line & hit
+  let hitHeli = false;
+  for (let t = 0; t < 150; t++) {
+    movingHeli.vx = 95;
+    movingHeli.vy = 0;
+    movingHeli.y = 220;
+    stepSimulation(hitState, { p1: {} });
+    if (movingHeli.hp < hpStart) {
+      hitHeli = true;
+      break;
+    }
+    if (hitState.projectiles.includes(sam)) {
+      assert.equal(sam.vx, initVx, "Unguided SAM keeps constant vx (straight line)");
+      assert.equal(sam.vy, initVy, "Unguided SAM keeps constant vy (straight line)");
+      const cross = (sam.x - startX) * initVy - (sam.y - startY) * initVx;
+      assert.ok(Math.abs(cross) < 1e-4, "Unguided SAM moves along exact straight ray");
+    }
+  }
+  assert.equal(hitHeli, true, "Predictive straight-line SAM intercepts steadily moving aircraft");
+});
+
+test("All ground troops except ambulances progress strictly forward toward enemy base without ever retreating", () => {
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  // Place enemy unit BEHIND allied spawn position and keep neutral bunkers behind
+  spawnGroundUnit(state, "enemy", "1", -450);
+
+  const alliedUnits = [
+    spawnGroundUnit(state, "allied", "1", 100),
+    spawnGroundUnit(state, "allied", "2", 100),
+    spawnGroundUnit(state, "allied", "3", 100),
+    spawnGroundUnit(state, "allied", "4", 100),
+    spawnGroundUnit(state, "allied", "5", 100),
+    spawnGroundUnit(state, "allied", "7", 100)
+  ];
+  // Landed allied paratrooper at x=100 (with neutral bunker_2 at 0 and bunker_1 at -1800 behind it!)
+  state.paratroopers.push({
+    id: "para_test_1",
+    team: "allied",
+    kind: "infantry",
+    x: 100,
+    y: 0,
+    vx: 0,
+    vy: 0,
+    dir: 1,
+    phase: "march",
+    collapseTimer: 0,
+    walkPhase: 0,
+    hp: 40,
+    maxHp: 40,
+    fireCooldown: 0
+  });
+
+  const prevX = new Map(alliedUnits.map((u) => [u.id, u.x]));
+  let prevParaX = 100;
+
+  for (let t = 0; t < 180; t++) {
+    stepSimulation(state, {});
+    for (const u of alliedUnits) {
+      if (u.hp <= 0 || !state.units.includes(u)) continue;
+      assert.ok(u.x >= prevX.get(u.id) - 1e-9, `${u.kind} never moves backwards`);
+      assert.ok(u.vx >= 0, `${u.kind} velocity is never negative`);
+      assert.equal(u.dir, 1, `${u.kind} always faces toward enemy base`);
+      prevX.set(u.id, u.x);
+    }
+    const para = state.paratroopers.find((p) => p.id === "para_test_1");
+    if (para) {
+      assert.ok(para.x >= prevParaX - 1e-9, "Marching paratrooper never retreats toward behind bunker");
+      assert.equal(para.dir, 1);
+      prevParaX = para.x;
+    }
+  }
+  assert.ok(alliedUnits.every((u) => u.x > 150), "All allied non-ambulance units advance forward toward enemy HQ");
+
+  // Ambulance CAN move in both directions (west to pick up civilian, east/west to return to HQ)
+  const ambState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const amb = spawnGroundUnit(ambState, "allied", "6", -1000);
+  spawnCivilian(ambState, -1200);
+  for (let t = 0; t < 90; t++) stepSimulation(ambState, {});
+  assert.ok(amb.x < -1050, "Ambulance is permitted to drive backwards (-X) to rescue stranded civilians");
+});
+
+test("Ambulances pass obstacles without stopping, are never targeted directly, and take shared crossfire damage inside hitboxes", () => {
+  // 1. Obstacle-free movement & non-targeting by tanks, bunkers, infantry, and AI bots
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  state.bunkers[2].owner = "enemy";
+  state.bunkers[2].hp = 1000;
+  const enemyTank = spawnGroundUnit(state, "enemy", "4", -120);
+  const enemyInf = spawnGroundUnit(state, "enemy", "1", -60);
+  const amb = spawnGroundUnit(state, "allied", "6", -240);
+  spawnCivilian(state, 350);
+
+  for (let t = 0; t < 300; t++) {
+    stepSimulation(state, {});
+  }
+  assert.ok(amb.x > 100, "Ambulance drives right past enemy tank, enemy infantry, and enemy bunker without stopping");
+  assert.equal(amb.hp, amb.maxHp, "Enemy tanks, infantry, and bunkers do not target or damage lone ambulance");
+
+  // Direct player cannon fire over an ambulance does not hit ambulance directly
+  const heli = addPlayer(state, "p1", "enemy", "heli");
+  heli.x = amb.x + 120;
+  heli.y = 20;
+  heli.dir = -1;
+  for (let t = 0; t < 15; t++) stepSimulation(state, { p1: { firePrimary: true } });
+  assert.equal(amb.hp, amb.maxHp, "Direct gunfire ignores ambulance when no combat target is hit");
+
+  // AI bot aircraft does not fire at lone enemy ambulance
+  const botHeli = addPlayer(state, "bot1", "enemy", "heli", { isBot: true });
+  botHeli.x = amb.x + 150;
+  botHeli.y = 125;
+  botHeli.dir = -1;
+  const botState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  spawnGroundUnit(botState, "allied", "6", 0);
+  const botInput = computeBotPilotInput(botState, botHeli);
+  assert.equal(botInput.firePrimary, false);
+  assert.equal(botInput.fireSecondary, false);
+
+  // 2. Tank duel crossfire: ambulance inside enemy tank's hitbox gets 50% shared damage; outside takes 0
+  const duelState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const alliedTank = spawnGroundUnit(duelState, "allied", "4", -150);
+  const rivalTank = spawnGroundUnit(duelState, "enemy", "4", 150);
+  const ambInside = spawnGroundUnit(duelState, "allied", "6", 165); // within 52m hitbox of rivalTank at 150
+  ambInside.passengers = []; // idle stationary
+  const ambOutside = spawnGroundUnit(duelState, "allied", "6", 300); // outside hitbox
+
+  let sawCrossfire = false;
+  for (let t = 0; t < 80; t++) {
+    ambInside.x = rivalTank.x + 15; // keep inside enemy tank hitbox during duel
+    ambOutside.x = rivalTank.x + 150;
+    stepSimulation(duelState, {});
+    if (duelState.events.some((e) => e.type === "ambulance_crossfire" && e.unitId === ambInside.id)) {
+      sawCrossfire = true;
+      break;
+    }
+  }
+  assert.equal(sawCrossfire, true, "Ambulance inside tank hitbox receives crossfire damage event");
+  assert.equal(ambInside.hp, ambInside.maxHp - Math.round(UNIT_CONFIG.mbt.damage * 0.5), "Ambulance receives 50% shared crossfire damage");
+  assert.equal(ambOutside.hp, ambOutside.maxHp, "Ambulance outside tank hitbox takes zero crossfire damage");
+});
+
+test("Ground units stop to shoot enemy troops/bunkers and AA flak trucks deal infantry damage to ground targets", () => {
+  // 1. Infantry vs infantry encounter -> stop & shoot each other, survivor resumes
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const infA = spawnGroundUnit(state, "allied", "1", -160);
+  const infE = spawnGroundUnit(state, "enemy", "1", 160);
+  infE.hp = 18; // allied infantry wins in 2 hits
+
+  let stoppedDuringFight = false;
+  for (let t = 0; t < 180; t++) {
+    stepSimulation(state, {});
+    if (infA.hp > 0 && infE.hp > 0 && infA.vx === 0 && infE.vx === 0 && Math.abs(infE.x - infA.x) <= UNIT_CONFIG.infantry.range) {
+      stoppedDuringFight = true;
+    }
+  }
+  assert.equal(stoppedDuringFight, true, "Opposing infantry stop and shoot each other upon encountering");
+  assert.equal(infE.hp, 0, "Enemy infantry destroyed in firefight");
+  assert.ok(infA.hp > 0 && infA.vx > 0, "Surviving infantry resumes forward progression");
+
+  // 2. AA Flak Truck engaging ground target deals exact infantry damage with light guns
+  const aaState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const aa = spawnGroundUnit(aaState, "allied", "2", 0);
+  const bunker = aaState.bunkers[2]; // at x = 0, give enemy ownership or place bunker ahead
+  aaState.bunkers[2].owner = "neutral";
+  const enemyTargetTank = spawnGroundUnit(aaState, "enemy", "4", 160);
+  const hpBefore = enemyTargetTank.hp;
+
+  stepSimulation(aaState, {});
+  const aaBullet = aaState.projectiles.find((p) => p.ownerId === aa.id && p.kind === "bullet");
+  assert.ok(aaBullet, "AA truck fires light gun bullet at ground enemy");
+  assert.equal(aaBullet.damage, UNIT_CONFIG.infantry.damage, "AA truck ground light gun deals exact infantry damage (9)");
+  assert.equal(aa.fireCooldown, UNIT_CONFIG.infantry.fireCooldownTicks, "AA truck uses infantry fire cooldown on ground guns");
+
+  for (let t = 0; t < 25; t++) stepSimulation(aaState, {});
+  assert.equal(enemyTargetTank.hp, hpBefore - UNIT_CONFIG.infantry.damage, "AA light gun inflicts exact infantry damage on impact");
+});
+
+test("Damaged ground units move slower, fire slower, and damaged AA fires only slow SAMs until repaired", () => {
+  // 1. Damaged MBT moves slower and fires slower than healthy MBT
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const healthyMbt = spawnGroundUnit(state, "allied", "4", -3000);
+  const damagedMbt = spawnGroundUnit(state, "allied", "4", -3000);
+  damagedMbt.hp = Math.round(damagedMbt.maxHp * 0.2); // 20% HP
+
+  assert.ok(getGroundUnitSpeedMultiplier(damagedMbt) < 1);
+  assert.ok(getGroundUnitFireCooldown(UNIT_CONFIG.mbt.fireCooldownTicks, damagedMbt) > UNIT_CONFIG.mbt.fireCooldownTicks);
+
+  for (let t = 0; t < 60; t++) stepSimulation(state, {});
+  const healthyDist = healthyMbt.x - -3000;
+  const damagedDist = damagedMbt.x - -3000;
+  assert.ok(damagedDist > 0 && damagedDist < healthyDist * 0.75, "Damaged MBT advances noticeably slower than healthy MBT");
+
+  // Fire rate comparison against enemy bunkers
+  const fireState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  fireState.bunkers[1].owner = "enemy"; // x = -1800
+  fireState.bunkers[1].hp = 5000;
+  const hTank = spawnGroundUnit(fireState, "allied", "4", -2050);
+  const dTank = spawnGroundUnit(fireState, "allied", "4", -2050);
+  dTank.hp = Math.round(dTank.maxHp * 0.25);
+  stepSimulation(fireState, {});
+  assert.ok(dTank.fireCooldown > hTank.fireCooldown, "Damaged MBT has longer fire cooldown (slower rate of fire)");
+
+  // 2. Damaged AA Flak Truck fires ONLY slow SAMs even vs fast P-47, and restores fast SAMs when repaired by Supply Truck
+  const aaState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const fastJet = addPlayer(aaState, "p1", "allied", "p47");
+  fastJet.x = -550;
+  fastJet.y = 300;
+  fastJet.speed = 520;
+  fastJet.vx = 520;
+
+  const damagedAa = spawnGroundUnit(aaState, "enemy", "2", 0);
+  damagedAa.hp = 60; // damaged (< 140 maxHp)
+
+  stepSimulation(aaState, { p1: { right: true } });
+  const slowSam = aaState.projectiles.find((p) => p.kind === "sam_missile");
+  assert.ok(slowSam, "Damaged AA still launches SAM within visual range");
+  assert.equal(slowSam.samProfile, "slow", "Damaged AA fires ONLY slow SAM missiles even at fast P-47");
+  assert.equal(slowSam.speed, UNIT_CONFIG.aa_truck.samSpeeds.slow);
+  assert.ok(damagedAa.samCooldown > UNIT_CONFIG.aa_truck.samCooldownTicks, "Damaged AA reloads SAMs more slowly");
+
+  // Repair AA back to full HP with Supply Truck aura -> fast SAM capability returns
+  const supply = spawnGroundUnit(aaState, "enemy", "7", 50);
+  assert.ok(supply);
+  for (let t = 0; t < 240; t++) {
+    fastJet.x = -550;
+    fastJet.y = 300;
+    fastJet.vx = 520;
+    fastJet.speed = 520;
+    damagedAa.x = 0;
+    stepSimulation(aaState, { p1: { right: true } });
+    if (damagedAa.hp >= damagedAa.maxHp) break;
+  }
+  assert.equal(damagedAa.hp, damagedAa.maxHp, "Supply truck heals damaged AA back to full HP");
+  aaState.projectiles = [];
+  damagedAa.samCooldown = 0;
+  fastJet.x = -550;
+  fastJet.y = 300;
+  fastJet.vx = 520;
+  fastJet.speed = 520;
+  stepSimulation(aaState, { p1: { right: true } });
+  const restoredSam = aaState.projectiles.find((p) => p.kind === "sam_missile");
+  assert.ok(restoredSam, "Repaired AA fires SAM");
+  assert.equal(restoredSam.samProfile, "fast", "Repaired AA regains fast SAM capability against fast targets");
 });

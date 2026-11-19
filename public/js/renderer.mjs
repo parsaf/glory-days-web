@@ -332,6 +332,19 @@ export class SpriteBattlefieldRenderer {
     for (const u of state.units || []) {
       if (u.hp <= 0) continue;
       const uh = unitHeightMap[u.kind] || 48;
+      if (u.kind !== "infantry" && u.hp < u.maxHp && state.tick % 4 === 0) {
+        const dmgRatio = 1 - u.hp / u.maxHp;
+        if (Math.random() < 0.35 + dmgRatio * 0.65) {
+          this.smokeTrail.push({
+            x: u.x - u.dir * 8,
+            y: uh * 0.55 + 4,
+            r: 4 + dmgRatio * 4,
+            life: 0.4,
+            maxLife: 0.4,
+            color: dmgRatio > 0.6 ? "#475569" : "#94a3b8"
+          });
+        }
+      }
       if (u.kind === "supply_truck") {
         const { sx } = this.worldToScreen(u.x, 0, w, groundScreenY);
         const auraR = 240 * this.camZoom;
@@ -349,7 +362,10 @@ export class SpriteBattlefieldRenderer {
         const barW = u.kind === "infantry" ? 24 : 46;
         ctx.fillStyle = "rgba(0,0,0,0.55)";
         ctx.fillRect(sx - barW * 0.5, sy, barW, 4);
-        ctx.fillStyle = u.team === "allied" ? "#3b82f6" : "#ef4444";
+        const hpFillColor = u.hp < u.maxHp
+          ? (u.hp < u.maxHp * 0.35 ? "#ef4444" : "#f59e0b")
+          : (u.team === "allied" ? "#3b82f6" : "#ef4444");
+        ctx.fillStyle = hpFillColor;
         ctx.fillRect(sx - barW * 0.5, sy, barW * (u.hp / u.maxHp), 4);
         if (u.kind === "ambulance" && u.passengers?.length > 0) {
           ctx.fillStyle = "#fde047";
@@ -422,6 +438,12 @@ export class SpriteBattlefieldRenderer {
             ctx.fillStyle = "#f87171";
             ctx.font = "900 11px ui-sans-serif, system-ui, sans-serif";
             ctx.fillText("⚠ SAM LOCK — PRESS Z", sx, sy - 14);
+          }
+        } else if (player.aaWarningTicks > 0) {
+          if (Math.floor(state.time * 8) % 2 === 0) {
+            ctx.fillStyle = "#fb923c";
+            ctx.font = "900 11px ui-sans-serif, system-ui, sans-serif";
+            ctx.fillText("⚠ AA SAM — EVADE", sx, sy - 14);
           }
         } else if (player.aircraftType === "p47" && !player.landedAtBase && player.flightStage >= 3) {
           ctx.fillStyle = "#fbbf24";
@@ -499,13 +521,18 @@ export class SpriteBattlefieldRenderer {
         ctx.stroke();
       } else if (pr.kind === "p47_missile" || pr.kind === "sam_missile") {
         if (!pr.fuelBurnedOut) {
+          const samColor = pr.samProfile === "fast"
+            ? "#bae6fd"
+            : pr.samProfile === "slow"
+              ? "#fde68a"
+              : "#fecaca";
           this.smokeTrail.push({
             x: pr.x,
             y: pr.y,
             r: pr.kind === "sam_missile" ? 3.8 : 4.5,
             life: 0.35,
             maxLife: 0.35,
-            color: pr.kind === "sam_missile" ? "#fecaca" : "#e2e8f0"
+            color: pr.kind === "sam_missile" ? samColor : "#e2e8f0"
           });
         }
         const img = this.sprites.get("v2_missile");

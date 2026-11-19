@@ -16,6 +16,7 @@ export class TacticalHud {
     this.elFunds = document.getElementById("funds-label");
     this.elBunkerPips = document.getElementById("bunker-pips");
     this.elModeBadge = document.getElementById("mode-badge");
+    this.elAutoProdBadge = document.getElementById("autoprod-badge");
     this.elAudioBadge = document.getElementById("audio-badge");
     this.elPos = document.getElementById("pos-readout");
     this.elNet = document.getElementById("net-status");
@@ -28,6 +29,7 @@ export class TacticalHud {
     this.elVictoryRematchBtn = document.getElementById("victory-rematch-btn");
     this.elVictoryLobbyBtn = document.getElementById("victory-lobby-btn");
     this.elQDrawer = document.getElementById("q-drawer");
+    this.elQAutoProdStatus = document.getElementById("q-autoprod-status");
     this.elQGrid = document.getElementById("q-grid");
 
     // Pre-Match Lobby Elements
@@ -37,6 +39,7 @@ export class TacticalHud {
     this.elLobbyRoomJoin = document.getElementById("lobby-room-join");
     this.elLobbyModeBtns = Array.from(document.querySelectorAll(".mode-btn"));
     this.elLobbyBotsBtn = document.getElementById("lobby-bots-btn");
+    this.elLobbyAutoProdBtn = document.getElementById("lobby-autoprod-btn");
     this.elLobbyCallsign = document.getElementById("lobby-callsign");
     this.elLobbyPanelAllied = document.getElementById("lobby-panel-allied");
     this.elLobbyPanelEnemy = document.getElementById("lobby-panel-enemy");
@@ -145,6 +148,10 @@ export class TacticalHud {
       handlers.onToggleBots?.();
       this.elLobbyBotsBtn.blur();
     });
+    this.elLobbyAutoProdBtn?.addEventListener("click", () => {
+      handlers.onToggleAutoProduction?.();
+      this.elLobbyAutoProdBtn.blur();
+    });
     this.elLobbyCallsign?.addEventListener("change", () => {
       handlers.onCallsignChange?.(this.elLobbyCallsign.value);
     });
@@ -240,6 +247,12 @@ export class TacticalHud {
     }
 
     const localP = state.players[localPlayerId];
+    const localTeam = localP?.team || "allied";
+    if (this.elLobbyAutoProdBtn) {
+      const autoOn = Boolean(state.autoProduction?.[localTeam]);
+      this.elLobbyAutoProdBtn.textContent = `AUTO PROD: ${autoOn ? "ON" : "OFF"}`;
+      this.elLobbyAutoProdBtn.classList.toggle("active", autoOn);
+    }
     if (this.elLobbyCallsign && document.activeElement !== this.elLobbyCallsign && localP) {
       this.elLobbyCallsign.value = localP.callsign || "";
     }
@@ -299,6 +312,15 @@ export class TacticalHud {
     if (this.elModeBadge) {
       const modeLabel = (state.matchMode || "1v1").toUpperCase();
       this.elModeBadge.textContent = `${modeLabel} • BOTS ${state.botsEnabled ? "ON" : "OFF"}`;
+    }
+    const autoOn = Boolean(state.autoProduction?.[team]);
+    if (this.elAutoProdBadge) {
+      this.elAutoProdBadge.textContent = autoOn ? "AUTO ON" : "AUTO OFF";
+      this.elAutoProdBadge.style.color = autoOn ? "#22c55e" : "#94a3b8";
+    }
+    if (this.elQAutoProdStatus) {
+      this.elQAutoProdStatus.textContent = autoOn ? "T: AUTO PROD ON (TANKS & AA)" : "T: AUTO PROD OFF";
+      this.elQAutoProdStatus.style.color = autoOn ? "#22c55e" : "#94a3b8";
     }
     if (this.elAudioBadge) {
       this.elAudioBadge.textContent = audioEnabled ? "SFX ON" : "SFX OFF";
@@ -383,6 +405,9 @@ export class TacticalHud {
         alertClass = "info";
       } else if (p?.samWarningTicks > 0) {
         alertText = "SAM LOCK — PRESS Z FOR FLARES!";
+        alertClass = "";
+      } else if (p?.aaWarningTicks > 0) {
+        alertText = "INCOMING AA SAM — EVADE!";
         alertClass = "";
       } else if (p47Stalling) {
         alertText = "STALL / DESCENDING — HOLD ←/→ THRUST";
