@@ -3,7 +3,10 @@ import test from "node:test";
 import { SpriteBattlefieldRenderer } from "../public/js/renderer.mjs";
 import {
   AIRCRAFT_CONFIG,
+  AUTO_PRODUCTION_COLUMN_PAUSE_TICKS,
+  AUTO_PRODUCTION_COLUMN_SIZE,
   AUTO_PRODUCTION_COOLDOWN_TICKS,
+  AUTO_PRODUCTION_GATE_CLEARANCE,
   AUTO_PRODUCTION_PATTERN,
   BASE_INCOME_PER_SEC,
   BASES,
@@ -14,6 +17,8 @@ import {
   CIVILIAN_KILL_PENALTY,
   MISSILE_FUEL_DISTANCE,
   SLOW_FIRE_INTERVAL,
+  SPECIAL_WEAPON_CIV_GOAL_BASE,
+  SPECIAL_WEAPON_CIV_GOAL_MULTI_HELI,
   STRATEGIC_CONFIG,
   UNIT_CONFIG
 } from "../shared/constants.mjs";
@@ -24,10 +29,12 @@ import {
   configureMatch,
   createInitialState,
   createNetworkSnapshot,
+  getCivilianSpecialGoal,
   getGroundUnitFireCooldown,
   getGroundUnitSpeedMultiplier,
   handlePlayerRequisition,
   handlePlayerUtility,
+  launchSpecialWeapon,
   planSamInterception,
   reconcileClientState,
   removePlayer,
@@ -80,18 +87,17 @@ test("Primary gun (A) burst reservoir fires 12/s for 90 ticks, drops to 1/0.5s, 
   assert.equal(player.burstReservoir, BURST_MAX_TICKS);
 });
 
-test("P-47 straight-trajectory missile flies straight for 4000m (1/3 map) before burning out and falling", () => {
+test("Helicopter straight-trajectory missile flies straight for 4000m (1/3 map) before burning out and falling", () => {
   const state = createInitialState({ includePracticeTargets: false });
-  const player = addPlayer(state, "p1", "allied", "p47");
+  const player = addPlayer(state, "p1", "allied", "heli");
   player.x = -5000;
   player.y = 500;
-  player.vx = 440;
+  player.vx = 200;
   player.pitch = 0;
-  player.effectivePitch = 0;
 
   stepSimulation(state, { p1: { fireSecondary: true } });
-  const missile = state.projectiles.find((p) => p.kind === "p47_missile");
-  assert.ok(missile, "P-47 missile spawned");
+  const missile = state.projectiles.find((p) => p.kind === "heli_missile");
+  assert.ok(missile, "Helicopter missile spawned");
   assert.equal(missile.fuelBurnedOut, false);
   assert.equal(missile.maxFuelDistance, MISSILE_FUEL_DISTANCE);
 
@@ -174,19 +180,17 @@ test("Base landing auto-repairs/reloads without modal and manual Q->0 swaps airc
   assert.equal(player.landedAtBase, false);
   assert.equal(swapPlayerAircraft(state, "p1"), false);
 
-  // Landed on Base pad repairs, reloads, and allows manual swap via Q->0
+  // Landed on Base pad repairs, reloads secondary ordnance, and allows manual swap via Q->0
   player.y = 0;
   player.vx = 0;
   player.vy = 0;
   player.hp = 200;
   player.secondaryAmmo = 2;
-  player.flaresAmmo = 1;
 
   for (let t = 0; t < 60; t++) stepSimulation(state, { p1: {} });
   assert.equal(player.landedAtBase, true);
   assert.ok(player.hp > 280, "Base pad repairs HP");
   assert.equal(player.secondaryAmmo, 4, "Base pad reloads secondary ammo every 0.5s");
-  assert.equal(player.flaresAmmo, 3, "Base pad reloads flares every 0.5s");
 
   assert.equal(swapPlayerAircraft(state, "p1"), true);
   assert.equal(player.aircraftType, "p47");
@@ -215,30 +219,24 @@ test("Helicopter E-key drops paratroopers that transition through chute collapse
   assert.equal(state.bunkers[1].owner, "allied", "Dropped paratrooper captures neutral bunker");
 });
 
-test("Helicopter free-drops bombs straight down when hovering and inherits exact chopper momentum when moving", () => {
+test("P-47 drops ballistic dumb bombs inheriting exact plane momentum and falling under gravity", () => {
   const state = createInitialState({ includePracticeTargets: false });
-  const player = addPlayer(state, "p1", "allied", "heli");
+  const player = addPlayer(state, "p1", "allied", "p47");
   player.x = 0;
-  player.y = 300;
-  player.vx = 0;
+  player.y = 320;
+  player.speed = 380;
+  player.vx = 380;
   player.vy = 0;
 
-  // Hovering bomb drop -> zero horizontal speed (drops straight down)
-  stepSimulation(state, { p1: { fireSecondary: true } });
-  const hoverBomb = state.projectiles.find((p) => p.kind === "heli_bomb");
-  assert.ok(hoverBomb);
-  assert.equal(hoverBomb.vx, 0, "Hovering chopper bomb has 0 horizontal velocity");
+  stepSimulation(state, { p1: { right: true, fireSecondary: true } });
+  const bomb = state.projectiles.find((p) => p.kind === "p47_bomb");
+  assert.ok(bomb, "P-47 spawns dumb bomb on Secondary fire");
+  assert.equal(bomb.fuelBurnedOut, true, "Dumb bomb is ballistic (no rocket propulsion)");
+  assert.equal(bomb.vx, player.vx, "P-47 transfers horizontal momentum to dumb bomb");
 
-  // Moving forward bomb drop -> inherits helicopter momentum
-  state.projectiles = [];
-  player.secondaryCooldown = 0;
-  player.vx = 240;
-  player.vy = 15;
-  stepSimulation(state, { p1: { right: true, up: true, fireSecondary: true } });
-  const movingBomb = state.projectiles.find((p) => p.kind === "heli_bomb");
-  assert.ok(movingBomb);
-  assert.ok(movingBomb.vx > 200, "Moving chopper transfers forward horizontal momentum to bomb");
-  assert.equal(movingBomb.vx, player.vx);
+  const initVy = bomb.vy;
+  for (let t = 0; t < 15; t++) stepSimulation(state, { p1: { right: true } });
+  assert.ok(bomb.vy < initVy - 80, "Dumb bomb accelerates downward under gravity");
 });
 
 test("Helicopter primary cannon shoots straight out front at 0 deg + pitch, and tilts nose-down when moving left or right", () => {
@@ -576,7 +574,7 @@ test("Flight Lab scenarios (stall, brake, bounce, crash) and smooth wavePhase in
 
 test("Phase 2: Shared Team War Funds income, bunker neutralization, HQ victory & rematch reset", () => {
   const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
-  const p1 = addPlayer(state, "p1", "allied", "p47");
+  const p1 = addPlayer(state, "p1", "allied", "heli");
 
   // 1. Passive income tick at 60 ticks: $10 base with 0 bunkers
   const startAllied = state.teamFunds.allied;
@@ -597,9 +595,8 @@ test("Phase 2: Shared Team War Funds income, bunker neutralization, HQ victory &
   p1.y = 35;
   p1.dir = 1;
   p1.pitch = 0;
-  p1.effectivePitch = 0;
-  p1.speed = 420;
-  p1.vx = 420;
+  p1.vx = 0;
+  p1.vy = 0;
   stepSimulation(state, { p1: { fireSecondary: true } });
   let neutralized = false;
   for (let t = 0; t < 45; t++) {
@@ -615,7 +612,6 @@ test("Phase 2: Shared Team War Funds income, bunker neutralization, HQ victory &
   p1.x = BASES.enemy.hqX - 350;
   p1.y = 45;
   p1.pitch = 0;
-  p1.effectivePitch = 0;
   p1.secondaryCooldown = 0;
   stepSimulation(state, { p1: { fireSecondary: true } });
   for (let t = 0; t < 60; t++) {
@@ -632,14 +628,19 @@ test("Phase 2: Shared Team War Funds income, bunker neutralization, HQ victory &
   assert.equal(state.teamFunds.allied, 500);
 });
 
-test("Phase 2: Requisition [1] Infantry captures bunkers & fights; [3] APC deploys 2 infantry at neutral bunker & on death", () => {
+test("Phase 2: Requisition [1] Infantry captures bunkers & fights; Armored APC is removed", () => {
   const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
   const p1 = addPlayer(state, "p1", "allied", "heli");
   state.teamFunds.allied = 1000;
 
-  // Tank [4] rolls past neutral bunker without capturing it
-  const tank = handlePlayerRequisition(state, "p1", "4");
+  // Armored APC has been removed from requisitions and spawner
+  assert.equal(handlePlayerRequisition(state, "p1", "apc"), false);
+  assert.equal(spawnGroundUnit(state, "allied", "armored_apc"), null);
+
+  // Tank [3] rolls past neutral bunker without capturing it
+  const tank = handlePlayerRequisition(state, "p1", "3");
   assert.ok(tank);
+  assert.equal(tank.kind, "main_battle_tank");
   assert.equal(state.teamFunds.allied, 600);
   tank.x = state.bunkers[0].x - 30;
   for (let t = 0; t < 90; t++) stepSimulation(state, { p1: {} });
@@ -653,28 +654,9 @@ test("Phase 2: Requisition [1] Infantry captures bunkers & fights; [3] APC deplo
   for (let t = 0; t < 90; t++) stepSimulation(state, { p1: {} });
   assert.equal(state.bunkers[0].owner, "allied", "Infantry [1] captures neutralized bunker");
   assert.equal(state.bunkers[0].hp, 1000);
-
-  // Armored APC [3] deploys 2 friendly Infantry on reaching neutral bunker
-  const apc = handlePlayerRequisition(state, "p1", "3");
-  assert.ok(apc);
-  apc.x = state.bunkers[1].x - 75;
-  for (let t = 0; t < 60; t++) stepSimulation(state, { p1: {} });
-  const deployedAtBunker = state.units.filter((u) => u.team === "allied" && u.kind === "infantry");
-  assert.ok(deployedAtBunker.length >= 1, "APC deploys 2 friendly infantry upon reaching neutral bunker");
-
-  // Wait until deployed infantry capture bunker 1
-  for (let t = 0; t < 120; t++) stepSimulation(state, { p1: {} });
-  assert.equal(state.bunkers[1].owner, "allied");
-
-  // APC [3] destroyed before reaching neutral bunker also deploys 2 infantry
-  const apcDoomed = spawnGroundUnit(state, "enemy", "3", 2500);
-  apcDoomed.hp = 0;
-  stepSimulation(state, { p1: {} });
-  const enemyInf = state.units.filter((u) => u.team === "enemy" && u.kind === "infantry");
-  assert.equal(enemyInf.length, 2, "Destroyed APC deploys 2 infantry");
 });
 
-test("Phase 2: [2] AA Flak/SAM Truck fires unguided predictive SAMs, while Base AA fires guided SAMs spoofed by Z Flares", () => {
+test("Phase 2: [2] AA Flak/SAM Truck fires unguided predictive SAMs while Bases and Bunkers never fire AA", () => {
   const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
   const allied = addPlayer(state, "p1", "allied", "p47");
   allied.x = 500;
@@ -694,83 +676,79 @@ test("Phase 2: [2] AA Flak/SAM Truck fires unguided predictive SAMs, while Base 
   }
   assert.ok(aaSam, "Enemy AA truck fires unguided straight-line SAM missile at airborne aircraft");
   assert.ok(allied.aaWarningTicks > 0, "Targeted aircraft receives incoming AA SAM warning");
+  assert.equal(state.flares.length, 0, "Flares are removed");
 
-  // Deploying Z flares does NOT spoof AA truck's unguided SAM
-  stepSimulation(state, { p1: { fireFlare: true } });
-  assert.equal(aaSam.spoofedByFlareId, null, "Unguided AA SAM cannot be spoofed by flares");
-
-  // Enemy Base AA protects enemy HQ with guided SAMs that trigger SAM LOCK and are spoofed by Z flares
-  const baseState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
-  const intruder = addPlayer(baseState, "p2", "allied", "heli");
-  intruder.x = BASES.enemy.hqX - 500;
-  intruder.y = 260;
-  stepSimulation(baseState, { p2: {} });
-  assert.ok(
-    baseState.projectiles.some((pr) => pr.team === "enemy" && pr.kind === "sam_missile" && pr.guided === true),
-    "Base AA fires guided SAM at enemy aircraft approaching Base HQ"
-  );
-  assert.ok(intruder.samWarningTicks > 0, "Base AA guided SAM triggers SAM LOCK warning");
-
-  const hpBeforeFlare = intruder.hp;
-  stepSimulation(baseState, { p2: { fireFlare: true } });
-  let spoofed = false;
-  let maxSingleTickDrop = 0;
-  for (let t = 0; t < 90; t++) {
-    const prevHp = intruder.hp;
-    stepSimulation(baseState, { p2: {} });
-    maxSingleTickDrop = Math.max(maxSingleTickDrop, prevHp - intruder.hp);
-    if (baseState.events.some((e) => e.type === "sam_spoofed")) spoofed = true;
+  // Bases and Bunkers must NOT fire AA flak or SAMs at approaching enemy aircraft
+  const noAaState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  noAaState.bunkers[2].owner = "enemy";
+  noAaState.bunkers[2].hp = 1000;
+  const lowPlane = addPlayer(noAaState, "p2", "allied", "heli");
+  lowPlane.x = 120; // well within bunker AA envelope previously
+  lowPlane.y = 140;
+  for (let t = 0; t < 60; t++) {
+    lowPlane.y = 140;
+    stepSimulation(noAaState, { p2: {} });
   }
-  assert.equal(spoofed, true, "Active Z flares spoof Base AA guided SAM missile");
-  assert.ok(maxSingleTickDrop < 75, "Guided SAM (75 dmg) never struck aircraft after flare spoof");
-  assert.ok(intruder.hp <= hpBeforeFlare);
+  assert.equal(noAaState.projectiles.length, 0, "Enemy bunkers do not fire AA flak at aircraft");
+
+  const baseApproach = addPlayer(noAaState, "p3", "allied", "heli");
+  baseApproach.x = BASES.enemy.hqX - 450;
+  baseApproach.y = 240;
+  for (let t = 0; t < 60; t++) {
+    baseApproach.y = 240;
+    stepSimulation(noAaState, { p2: {}, p3: {} });
+  }
+  assert.equal(noAaState.projectiles.length, 0, "Enemy Base HQ never fires AA flak or SAM missiles at aircraft");
 });
 
-test("Phase 2: [4] MBT, [5] Howitzer rear-hit 1.75x & standoff, [7] Supply Truck +25 HP/s aura, Bunker defense", () => {
+test("Phase 2: [3] MBT, [4] Howitzer rear-hit 1.75x & standoff, [6] Supply Truck +25 HP/s aura, Bunker ground defense", () => {
   const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
   const p1 = addPlayer(state, "p1", "allied", "heli");
   state.teamFunds.allied = 2000;
 
-  // Howitzer [5] outranges MBT [4] and fires splash shells
-  const howitzer = handlePlayerRequisition(state, "p1", "5");
+  // Howitzer [4] outranges MBT [3] and fires splash shells
+  const howitzer = handlePlayerRequisition(state, "p1", "4");
   howitzer.x = 0;
-  const enemyTank = spawnGroundUnit(state, "enemy", "4", 650);
+  const enemyTank = spawnGroundUnit(state, "enemy", "3", 650);
   const enemyHpBefore = enemyTank.hp;
   for (let t = 0; t < 160; t++) stepSimulation(state, { p1: {} });
   assert.ok(enemyTank.hp < enemyHpBefore, "Howitzer engages enemy MBT from standoff range (650m)");
 
-  // Rear-hit 1.75x damage on MBT in state.units (enemy tank facing -X, helicopter sweeps -X from behind)
-  const rearTank = spawnGroundUnit(state, "enemy", "4", -1200);
-  p1.x = -1050;
-  p1.y = 140;
-  p1.dir = -1;
-  p1.vx = -200; // moving -X -> bomb hits enemy tank (dir = -1) from behind!
-  stepSimulation(state, { p1: { fireSecondary: true } });
+  // Rear-hit 1.75x damage on MBT in state.units (enemy tank facing -X, P-47 sweeps -X from behind dropping dumb bomb)
+  const rearTank = spawnGroundUnit(state, "enemy", "3", -1200);
+  const bomber = addPlayer(state, "bomber", "allied", "p47");
+  bomber.x = -1057;
+  bomber.y = 140;
+  bomber.dir = -1;
+  bomber.speed = 230;
+  bomber.vx = -230; // moving -X -> dumb bomb hits enemy tank (dir = -1) from behind!
+  stepSimulation(state, { bomber: { left: true, fireSecondary: true } });
   let sawRearHit = false;
   for (let t = 0; t < 90; t++) {
-    stepSimulation(state, { p1: {} });
+    stepSimulation(state, { bomber: { left: true } });
     if (state.events.some((e) => e.type === "explosion" && e.rearHit)) sawRearHit = true;
   }
   assert.equal(sawRearHit, true, "Bombing ground MBT from behind triggers 1.75x rearHit");
-  assert.equal(rearTank.hp, rearTank.maxHp - Math.round(AIRCRAFT_CONFIG.heli.secondaryDamage * 1.75));
+  assert.equal(rearTank.hp, rearTank.maxHp - Math.round(AIRCRAFT_CONFIG.p47.bombDamage * 1.75));
 
-  // Supply Truck [7] heals damaged friendly MBT at +25 HP/s
-  const damagedMbt = spawnGroundUnit(state, "allied", "4", -3000);
+  // Supply Truck [6] heals damaged friendly MBT at +25 HP/s
+  const damagedMbt = spawnGroundUnit(state, "allied", "3", -3000);
   damagedMbt.hp = 300;
-  const supply = handlePlayerRequisition(state, "p1", "7");
+  const supply = handlePlayerRequisition(state, "p1", "6");
+  assert.equal(supply.kind, "supply_truck");
   supply.x = -3100;
   for (let t = 0; t < 120; t++) stepSimulation(state, { p1: {} }); // 2s = +50 HP
   assert.ok(damagedMbt.hp >= 348 && damagedMbt.hp <= 360, "Supply truck heals nearby friendly armor at +25 HP/s");
 
-  // Captured bunker fires defensive shots at approaching enemy infantry
+  // Captured bunker fires defensive ground shots at approaching enemy infantry
   state.bunkers[2].owner = "allied";
   state.bunkers[2].hp = 1000;
   const intruderInf = spawnGroundUnit(state, "enemy", "1", 250);
   for (let t = 0; t < 120; t++) stepSimulation(state, { p1: {} });
-  assert.ok(intruderInf.hp < 40, "Captured bunker shoots approaching enemy units");
+  assert.ok(intruderInf.hp < 40, "Captured bunker shoots approaching enemy ground units");
 });
 
-test("Phase 2: Civilian distress, Helicopter & [6] Ambulance rescue payout ($40N + $15N^2) & -$100 kill penalty", () => {
+test("Phase 2: Civilian distress, Helicopter & [5] Ambulance rescue payout ($40N + $15N^2) & -$100 kill penalty", () => {
   assert.equal(calculateCivilianPayout(1), 55);
   assert.equal(calculateCivilianPayout(4), 400);
   assert.equal(calculateCivilianPayout(8), 1280);
@@ -812,12 +790,13 @@ test("Phase 2: Civilian distress, Helicopter & [6] Ambulance rescue payout ($40N
   assert.equal(state.teamFunds.allied, fundsBeforeUnload + calculateCivilianPayout(2));
   assert.equal(heli.passengers.length, 0);
 
-  // 2. Field Ambulance [6] drives to civilian, boards, and returns to HQ for payout
+  // 2. Field Ambulance [5] drives to civilian, boards, and returns to HQ for payout
   const ambState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
   addPlayer(ambState, "p1", "allied", "p47");
   ambState.teamFunds.allied = 500;
-  const amb = handlePlayerRequisition(ambState, "p1", "6");
+  const amb = handlePlayerRequisition(ambState, "p1", "5");
   assert.ok(amb);
+  assert.equal(amb.kind, "ambulance");
   amb.x = -4200;
   spawnCivilian(ambState, -3800);
   const fundsAfterBuy = ambState.teamFunds.allied;
@@ -849,15 +828,20 @@ test("Phase 2: Civilian distress, Helicopter & [6] Ambulance rescue payout ($40N
   assert.equal(penState.teamFunds.allied, 400 - CIVILIAN_KILL_PENALTY);
 });
 
-test("Phase 2: [8] B-52 Carpet Raid drops 24 bombs & is interceptable; [9] V2 Missile steers via arrows & deals AoE", () => {
-  // 1. B-52 Carpet Bombing Raid drops 24 bombs across 1,500m target strip
+test("Phase 2: Special Weapons [Z] B-52 Carpet Raid drops 24 bombs & [X] V2 Missile steers via arrows & deals AoE", () => {
+  // 1. Q-menu [8] and [9] no longer buy B-52 / V2
   const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
-  const p1 = addPlayer(state, "p1", "allied", "p47");
+  addPlayer(state, "p1", "allied", "p47");
   state.teamFunds.allied = 1500;
+  assert.equal(handlePlayerRequisition(state, "p1", "8", { targetX: 1200 }), false, "Q->8 no longer launches B-52");
+  assert.equal(handlePlayerRequisition(state, "p1", "9"), false, "Q->9 no longer launches V2");
+  assert.equal(launchSpecialWeapon(state, "p1", "b52", { targetX: 1200 }), false, "B-52 locked until special weapon earned");
 
-  const b52 = handlePlayerRequisition(state, "p1", "8", { targetX: 1200 });
+  // Unlock 2 charges to exercise B-52 launch + mid-air interception
+  state.specialWeapons.allied.available = 2;
+  const b52 = launchSpecialWeapon(state, "p1", "b52", { targetX: 1200 });
   assert.ok(b52);
-  assert.equal(state.teamFunds.allied, 1500 - STRATEGIC_CONFIG.b52_raid.cost);
+  assert.equal(state.teamFunds.allied, 1500, "Special weapon B-52 launch costs zero war funds");
   b52.x = 380; // start just ahead of strip [450 .. 1950]
 
   let bombsDropped = 0;
@@ -867,20 +851,19 @@ test("Phase 2: [8] B-52 Carpet Raid drops 24 bombs & is interceptable; [9] V2 Mi
   }
   assert.equal(bombsDropped, 24, "B-52 drops exact 24 carpet bombs across target zone");
 
-  // Enemy P-47 can intercept and shoot down a B-52 mid-flight
-  const b52Target = handlePlayerRequisition(state, "p1", "8", { targetX: 0 });
+  // Enemy P-47 can intercept and shoot down a B-52 mid-flight with wing cannons
+  const b52Target = launchSpecialWeapon(state, "p1", "b52", { targetX: 0 });
   b52Target.x = 0;
-  b52Target.hp = 120;
+  b52Target.hp = 30;
   const interceptor = addPlayer(state, "e1", "enemy", "p47");
   interceptor.x = 260;
   interceptor.y = b52Target.y;
   interceptor.dir = -1;
   interceptor.vx = -420;
   interceptor.speed = 420;
-  stepSimulation(state, { e1: { fireSecondary: true } });
   let shotDown = false;
   for (let t = 0; t < 45; t++) {
-    stepSimulation(state, {});
+    stepSimulation(state, { e1: { firePrimary: true } });
     if (state.events.some((e) => e.type === "b52_destroyed")) shotDown = true;
   }
   assert.equal(shotDown, true, "Climbing P-47 can intercept and destroy B-52 mid-flight");
@@ -889,13 +872,14 @@ test("Phase 2: [8] B-52 Carpet Raid drops 24 bombs & is interceptable; [9] V2 Mi
   const v2State = createInitialState({ includePracticeTargets: false, includeCivilians: false });
   const launcher = addPlayer(v2State, "p1", "allied", "heli");
   v2State.teamFunds.allied = 1000;
-  const targetTank = spawnGroundUnit(v2State, "enemy", "4", 1200);
+  v2State.specialWeapons.allied.available = 2;
+  const targetTank = spawnGroundUnit(v2State, "enemy", "3", 1200);
   targetTank.vx = 0;
 
-  const v2 = handlePlayerRequisition(v2State, "p1", "9");
+  const v2 = launchSpecialWeapon(v2State, "p1", "v2");
   assert.ok(v2);
   assert.equal(launcher.controllingV2Id, v2.id);
-  assert.equal(v2State.teamFunds.allied, 1000 - STRATEGIC_CONFIG.v2_missile.cost);
+  assert.equal(v2State.teamFunds.allied, 1000, "Special weapon V2 launch costs zero war funds");
 
   // Climb slightly then pitch down via ArrowDown to verify steering control
   for (let t = 0; t < 25; t++) stepSimulation(v2State, { p1: {} });
@@ -920,18 +904,17 @@ test("Phase 2: [8] B-52 Carpet Raid drops 24 bombs & is interceptable; [9] V2 Mi
   assert.equal(launcher.controllingV2Id, null, "Camera/control returns to player after V2 detonation");
   assert.equal(v2State.units.filter((u) => u.id === targetTank.id && u.hp > 0).length, 0);
 
-  // V2 Cruise Missile is interceptable in mid-air
-  v2State.teamFunds.allied = 1000;
-  const v2Victim = handlePlayerRequisition(v2State, "p1", "9");
+  // V2 Cruise Missile is interceptable in mid-air by Helicopter missile
+  const v2Victim = launchSpecialWeapon(v2State, "p1", "v2");
   v2Victim.x = 0;
   v2Victim.y = 400;
   v2Victim.pitch = 0;
-  const defender = addPlayer(v2State, "e1", "enemy", "p47");
+  const defender = addPlayer(v2State, "e1", "enemy", "heli");
   defender.x = 240;
-  defender.y = 400;
+  defender.y = 388;
   defender.dir = -1;
-  defender.vx = -420;
-  defender.speed = 420;
+  defender.vx = 0;
+  defender.pitch = 0;
   stepSimulation(v2State, { e1: { fireSecondary: true } });
   let intercepted = false;
   for (let t = 0; t < 35; t++) {
@@ -975,7 +958,7 @@ test("Phase 3: Match modes (1v1, 2v2, 3v3) & dynamic bot slot auto-fill", () => 
   assert.equal(Object.values(state.players).filter((p) => p.isBot).length, 0);
 });
 
-test("Phase 3: AI Bot Commanders spend funds & AI pilots take off, fly sorties, and flare SAM locks", () => {
+test("Phase 3: AI Bot Commanders spend funds & AI pilots take off and fly sorties", () => {
   const state = createInitialState({ includePracticeTargets: false, includeCivilians: false, matchMode: "2v2", botsEnabled: true });
   addPlayer(state, "h1", "allied", "heli", { isBot: false });
   syncBotPlayers(state);
@@ -994,15 +977,6 @@ test("Phase 3: AI Bot Commanders spend funds & AI pilots take off, fly sorties, 
   const bots = Object.values(state.players).filter((p) => p.isBot);
   assert.ok(bots.length >= 2);
   assert.ok(bots.some((b) => b.y > 20), "AI pilots lift off and fly airborne sorties");
-
-  // SAM warning reflex triggers bot flare deployment
-  const targetBot = bots[0];
-  targetBot.y = 200;
-  targetBot.samWarningTicks = 60;
-  targetBot.flareCooldown = 0;
-  const flaresBefore = targetBot.flaresAmmo;
-  stepSimulation(state, { h1: {} });
-  assert.equal(targetBot.flaresAmmo, flaresBefore - 1, "Bot pilot automatically deploys flare on SAM lock");
 });
 
 test("Phase 3: 20 Hz compact network snapshots and client-side prediction reconciliation", () => {
@@ -1142,7 +1116,7 @@ test("Network snapshots carry all state stepSimulation needs so client-side pred
 
   const wire = () => JSON.parse(JSON.stringify(createNetworkSnapshot(server)));
   let client = wire();
-  for (const key of ["baseAa", "nextEntityId", "botThinkCooldown", "autoProduction", "autoProdCooldown", "autoProdCounter"]) {
+  for (const key of ["baseAa", "nextEntityId", "botThinkCooldown", "autoProduction", "autoProdCooldown", "autoProdCounter", "autoProdState", "specialWeapons"]) {
     assert.ok(key in client, `snapshot includes ${key}`);
   }
 
@@ -1156,40 +1130,88 @@ test("Network snapshots carry all state stepSimulation needs so client-side pred
   assert.ok(client.players.p1.x > BASES.allied.padCenterX + 50, "Predicted helicopter moves forward on client");
 });
 
-test("Auto troop production spawns primarily tanks and some AA flaks, works without bots, and toggles off", () => {
+test("Auto troop production deploys infantry/AA/tanks, spaces gate exits, pauses after 5-unit column, and ignores manual spawns", () => {
   const state = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: false });
   addPlayer(state, "p1", "allied", "heli");
-  state.teamFunds.allied = 2500;
+  state.teamFunds.allied = 10000;
 
   // Off by default -> zero auto spawns
   for (let t = 0; t < 120; t++) stepSimulation(state, { p1: {} });
   assert.equal(state.units.length, 0, "No auto-produced units spawn when autoProduction is off");
 
-  // Enable auto production for allied -> follows AUTO_PRODUCTION_PATTERN (3:1 tanks to AA)
   assert.equal(setAutoProduction(state, "allied", true), true);
   assert.ok(state.events.some((e) => e.type === "auto_production_toggled" && e.team === "allied" && e.enabled === true));
 
-  const spawnedKinds = [];
-  for (let t = 0; t < 3 * AUTO_PRODUCTION_COOLDOWN_TICKS + 10; t++) {
-    stepSimulation(state, { p1: {} });
-    for (const ev of state.events) {
-      if (ev.type === "unit_requisitioned" && ev.auto && ev.team === "allied") {
-        spawnedKinds.push(ev.unitKind);
+  const gateX = BASES.allied.hqX + 120;
+  const autoSpawns = [];
+  let prevAutoUnit = null;
+
+  // Step through 1st column (5 units) plus pause ticks
+  for (let t = 0; t < 1250; t++) {
+    // At tick 20, player manually deploys 3 tanks at the gate -> must NOT interrupt auto pacing or count toward the 5-unit cap
+    if (t === 20) {
+      for (let m = 0; m < 3; m++) {
+        const man = handlePlayerRequisition(state, "p1", "3");
+        assert.ok(man);
+        man.vx = 0;
       }
     }
+
+    const prevXBeforeTick = prevAutoUnit ? prevAutoUnit.x : null;
+    stepSimulation(state, { p1: {} });
+
+    for (const ev of state.events) {
+      if (ev.type === "unit_requisitioned" && ev.auto && ev.team === "allied") {
+        if (prevXBeforeTick !== null) {
+          assert.ok(
+            prevXBeforeTick - gateX >= AUTO_PRODUCTION_GATE_CLEARANCE - 2,
+            `Auto unit #${autoSpawns.length + 1} waits until previous auto unit clears ${AUTO_PRODUCTION_GATE_CLEARANCE}m past gate`
+          );
+        }
+        autoSpawns.push(ev);
+        prevAutoUnit = state.units.find((u) => u.id === ev.unitId);
+      }
+    }
+    if (autoSpawns.length === AUTO_PRODUCTION_COLUMN_SIZE) break;
   }
 
-  assert.equal(spawnedKinds.length, 4, "Produces 4 units across 4 cooldown cycles");
-  assert.deepEqual(spawnedKinds, ["main_battle_tank", "main_battle_tank", "aa_flak_truck", "main_battle_tank"]);
-  assert.equal(spawnedKinds.filter((k) => k === "main_battle_tank").length, 3);
-  assert.equal(spawnedKinds.filter((k) => k === "aa_flak_truck").length, 1);
+  assert.equal(autoSpawns.length, AUTO_PRODUCTION_COLUMN_SIZE, "First column spawns 5 auto-purchased troops cleanly");
+  const kinds = autoSpawns.map((s) => s.unitKind);
+  assert.deepEqual(kinds, ["main_battle_tank", "infantry", "main_battle_tank", "aa_flak_truck", "main_battle_tank"]);
+  assert.ok(kinds.includes("infantry"), "Auto mode deploys infantry");
+  assert.ok(kinds.includes("aa_flak_truck"), "Auto mode deploys AA flak");
+  assert.equal(kinds.filter((k) => k === "main_battle_tank").length, 3, "Auto mode deploys primarily tanks");
+
+  // Immediately after 5th unit, column pause must hold for AUTO_PRODUCTION_COLUMN_PAUSE_TICKS despite ample funds
+  assert.ok(
+    state.autoProdState.allied.pauseTicks === AUTO_PRODUCTION_COLUMN_PAUSE_TICKS,
+    "Column pause starts right after 5 auto units"
+  );
+  const countAtBreakStart = state.units.filter((u) => u.autoPurchased).length;
+  for (let t = 0; t < AUTO_PRODUCTION_COLUMN_PAUSE_TICKS - 5; t++) {
+    stepSimulation(state, { p1: {} });
+    assert.equal(
+      state.units.filter((u) => u.autoPurchased).length,
+      countAtBreakStart,
+      `Tick ${t}: no auto spawn during 5-unit column break even with abundant funds`
+    );
+  }
+
+  // Right after the pause finishes, column #2 begins deploying
+  let secondColFirst = null;
+  for (let t = 0; t < 20; t++) {
+    stepSimulation(state, { p1: {} });
+    secondColFirst = state.events.find((e) => e.type === "unit_requisitioned" && e.auto && e.team === "allied");
+    if (secondColFirst) break;
+  }
+  assert.ok(secondColFirst, "Auto mode resumes next column cleanly after break pause");
+  assert.equal(secondColFirst.unitKind, "main_battle_tank");
 
   // Disable auto production -> stops spawning even with remaining funds
-  const countBeforeOff = state.units.length;
-  state.teamFunds.allied = 2500;
+  const totalBeforeOff = state.units.length;
   assert.equal(setAutoProduction(state, "allied", false), false);
   for (let t = 0; t < 180; t++) stepSimulation(state, { p1: {} });
-  assert.equal(state.units.length, countBeforeOff, "Stopping auto production halts automatic spawning");
+  assert.equal(state.units.length, totalBeforeOff, "Stopping auto production halts automatic spawning");
 });
 
 test("AA Flak Truck SAMs respect visual range, travel in strict straight lines, predict intercepts, and select 3 speed profiles", () => {
@@ -1272,8 +1294,7 @@ test("All ground troops except ambulances progress strictly forward toward enemy
     spawnGroundUnit(state, "allied", "2", 100),
     spawnGroundUnit(state, "allied", "3", 100),
     spawnGroundUnit(state, "allied", "4", 100),
-    spawnGroundUnit(state, "allied", "5", 100),
-    spawnGroundUnit(state, "allied", "7", 100)
+    spawnGroundUnit(state, "allied", "6", 100)
   ];
   // Landed allied paratrooper at x=100 (with neutral bunker_2 at 0 and bunker_1 at -1800 behind it!)
   state.paratroopers.push({
@@ -1316,67 +1337,127 @@ test("All ground troops except ambulances progress strictly forward toward enemy
 
   // Ambulance CAN move in both directions (west to pick up civilian, east/west to return to HQ)
   const ambState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
-  const amb = spawnGroundUnit(ambState, "allied", "6", -1000);
+  const amb = spawnGroundUnit(ambState, "allied", "5", -1000);
   spawnCivilian(ambState, -1200);
   for (let t = 0; t < 90; t++) stepSimulation(ambState, {});
   assert.ok(amb.x < -1050, "Ambulance is permitted to drive backwards (-X) to rescue stranded civilians");
 });
 
-test("Ambulances pass obstacles without stopping, are never targeted directly, and take shared crossfire damage inside hitboxes", () => {
-  // 1. Obstacle-free movement & non-targeting by tanks, bunkers, infantry, and AI bots
+test("Ambulances pass obstacles without AI targeting, take friendly/enemy fire and crossfire, and incur civilian penalty when destroyed", () => {
+  // 1. Obstacle-free movement & non-targeting by enemy tanks, bunkers, infantry, and AI bots
   const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
   state.bunkers[2].owner = "enemy";
   state.bunkers[2].hp = 1000;
-  const enemyTank = spawnGroundUnit(state, "enemy", "4", -120);
-  const enemyInf = spawnGroundUnit(state, "enemy", "1", -60);
-  const amb = spawnGroundUnit(state, "allied", "6", -240);
+  spawnGroundUnit(state, "enemy", "3", -120);
+  spawnGroundUnit(state, "enemy", "1", -60);
+  const amb = spawnGroundUnit(state, "allied", "5", -240);
   spawnCivilian(state, 350);
 
+  let maxAmbX = amb.x;
   for (let t = 0; t < 300; t++) {
     stepSimulation(state, {});
+    maxAmbX = Math.max(maxAmbX, amb.x);
   }
-  assert.ok(amb.x > 100, "Ambulance drives right past enemy tank, enemy infantry, and enemy bunker without stopping");
-  assert.equal(amb.hp, amb.maxHp, "Enemy tanks, infantry, and bunkers do not target or damage lone ambulance");
+  assert.ok(maxAmbX > 100, "Ambulance drives right past enemy tank, enemy infantry, and enemy bunker without stopping");
+  assert.equal(amb.hp, amb.maxHp, "Enemy tanks, infantry, and bunkers do not deliberately target or damage lone ambulance");
 
-  // Direct player cannon fire over an ambulance does not hit ambulance directly
-  const heli = addPlayer(state, "p1", "enemy", "heli");
-  heli.x = amb.x + 120;
-  heli.y = 20;
-  heli.dir = -1;
-  for (let t = 0; t < 15; t++) stepSimulation(state, { p1: { firePrimary: true } });
-  assert.equal(amb.hp, amb.maxHp, "Direct gunfire ignores ambulance when no combat target is hit");
-
-  // AI bot aircraft does not fire at lone enemy ambulance
+  // AI bot aircraft does not deliberately target or fire at lone enemy ambulance
   const botHeli = addPlayer(state, "bot1", "enemy", "heli", { isBot: true });
-  botHeli.x = amb.x + 150;
+  botHeli.x = 150;
   botHeli.y = 125;
   botHeli.dir = -1;
   const botState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
-  spawnGroundUnit(botState, "allied", "6", 0);
+  spawnGroundUnit(botState, "allied", "5", 0);
   const botInput = computeBotPilotInput(botState, botHeli);
   assert.equal(botInput.firePrimary, false);
   assert.equal(botInput.fireSecondary, false);
 
-  // 2. Tank duel crossfire: ambulance inside enemy tank's hitbox gets 50% shared damage; outside takes 0
+  // 2. Direct enemy & friendly aircraft fire damages and destroys ambulances with civilian penalty
+  const ffState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  ffState.teamFunds.allied = 600;
+  ffState.teamFunds.enemy = 600;
+  const friendlyAmb = spawnGroundUnit(ffState, "allied", "5", 0);
+  friendlyAmb.passengers = ["civilian", "civilian"]; // 2 rescued civilians onboard -> $100 * 3 = $300 penalty
+  const enemyHeli = addPlayer(ffState, "e1", "enemy", "heli");
+  enemyHeli.x = 120;
+  enemyHeli.y = 16;
+  enemyHeli.dir = -1;
+  enemyHeli.vx = 0;
+
+  for (let t = 0; t < 15; t++) {
+    friendlyAmb.x = 0;
+    enemyHeli.x = 120;
+    enemyHeli.y = 16;
+    stepSimulation(ffState, { e1: { firePrimary: true } });
+  }
+  assert.ok(friendlyAmb.hp < friendlyAmb.maxHp, "Enemy gunfire directly hits and damages ambulance");
+
+  // Finish off with a friendly heli missile -> friendly fire destroys own ambulance and incurs passenger-scaled penalty
+  const alliedHeli = addPlayer(ffState, "p1", "allied", "heli");
+  alliedHeli.x = -120;
+  alliedHeli.y = 12;
+  alliedHeli.dir = 1;
+  alliedHeli.vx = 0;
+  stepSimulation(ffState, { p1: { fireSecondary: true } });
+  for (let t = 0; t < 20; t++) {
+    if (friendlyAmb.hp > 0) friendlyAmb.x = 0;
+    stepSimulation(ffState, { p1: {}, e1: {} });
+  }
+  assert.equal(friendlyAmb.hp, 0, "Friendly aircraft weapon directly destroys friendly ambulance");
+  assert.equal(
+    ffState.teamFunds.allied,
+    600 - CIVILIAN_KILL_PENALTY * 3,
+    "Destroying an ambulance with 2 onboard civilians deducts $300 civilian penalty from attacker's team"
+  );
+
+  // Destroying an empty ambulance also incurs base $100 civilian penalty
+  const emptyState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  emptyState.teamFunds.enemy = 500;
+  const targetAmb = spawnGroundUnit(emptyState, "allied", "5", 0);
+  targetAmb.hp = 30;
+  const enemyBomber = addPlayer(emptyState, "e1", "enemy", "heli");
+  enemyBomber.x = 120;
+  enemyBomber.y = 12;
+  enemyBomber.dir = -1;
+  enemyBomber.vx = 0;
+  stepSimulation(emptyState, { e1: { fireSecondary: true } });
+  let penaltyEv = null;
+  for (let t = 0; t < 20; t++) {
+    if (targetAmb.hp > 0) targetAmb.x = 0;
+    stepSimulation(emptyState, { e1: {} });
+    penaltyEv = penaltyEv || emptyState.events.find((e) => e.type === "civilian_killed" && e.cause === "ambulance_destroyed");
+  }
+  assert.ok(penaltyEv, "Destroying empty ambulance emits civilian_killed event with ambulance_destroyed cause");
+  assert.equal(penaltyEv.penalty, CIVILIAN_KILL_PENALTY);
+  assert.equal(emptyState.teamFunds.enemy, 500 - CIVILIAN_KILL_PENALTY, "Empty ambulance destruction deducts $100 civilian penalty");
+
+  // 3. Tank duel crossfire: ambulance inside enemy tank's hitbox gets 50% shared damage; outside takes 0; lethal crossfire incurs penalty
   const duelState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
-  const alliedTank = spawnGroundUnit(duelState, "allied", "4", -150);
-  const rivalTank = spawnGroundUnit(duelState, "enemy", "4", 150);
-  const ambInside = spawnGroundUnit(duelState, "allied", "6", 165); // within 52m hitbox of rivalTank at 150
-  ambInside.passengers = []; // idle stationary
-  const ambOutside = spawnGroundUnit(duelState, "allied", "6", 300); // outside hitbox
+  duelState.teamFunds.allied = 500;
+  spawnGroundUnit(duelState, "allied", "3", -150);
+  const rivalTank = spawnGroundUnit(duelState, "enemy", "3", 150);
+  const ambInside = spawnGroundUnit(duelState, "allied", "5", 165); // within 52m hitbox of rivalTank at 150
+  ambInside.hp = Math.round(UNIT_CONFIG.mbt.damage * 0.5); // lethal in 1 crossfire hit
+  const ambOutside = spawnGroundUnit(duelState, "allied", "5", 300); // outside hitbox
 
   let sawCrossfire = false;
+  let sawCrossfirePenalty = false;
   for (let t = 0; t < 80; t++) {
-    ambInside.x = rivalTank.x + 15; // keep inside enemy tank hitbox during duel
+    if (ambInside.hp > 0) ambInside.x = rivalTank.x + 15; // keep inside enemy tank hitbox during duel
     ambOutside.x = rivalTank.x + 150;
     stepSimulation(duelState, {});
     if (duelState.events.some((e) => e.type === "ambulance_crossfire" && e.unitId === ambInside.id)) {
       sawCrossfire = true;
+    }
+    if (duelState.events.some((e) => e.type === "civilian_killed" && e.cause === "ambulance_destroyed" && e.unitId === ambInside.id)) {
+      sawCrossfirePenalty = true;
       break;
     }
   }
   assert.equal(sawCrossfire, true, "Ambulance inside tank hitbox receives crossfire damage event");
-  assert.equal(ambInside.hp, ambInside.maxHp - Math.round(UNIT_CONFIG.mbt.damage * 0.5), "Ambulance receives 50% shared crossfire damage");
+  assert.equal(ambInside.hp, 0, "Ambulance inside tank hitbox takes lethal 50% shared crossfire damage");
+  assert.equal(sawCrossfirePenalty, true, "Lethal crossfire ambulance destruction emits civilian penalty event");
+  assert.equal(duelState.teamFunds.allied, 500 - CIVILIAN_KILL_PENALTY, "Lethal crossfire deducts civilian penalty from shooting team");
   assert.equal(ambOutside.hp, ambOutside.maxHp, "Ambulance outside tank hitbox takes zero crossfire damage");
 });
 
@@ -1401,9 +1482,8 @@ test("Ground units stop to shoot enemy troops/bunkers and AA flak trucks deal in
   // 2. AA Flak Truck engaging ground target deals exact infantry damage with light guns
   const aaState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
   const aa = spawnGroundUnit(aaState, "allied", "2", 0);
-  const bunker = aaState.bunkers[2]; // at x = 0, give enemy ownership or place bunker ahead
   aaState.bunkers[2].owner = "neutral";
-  const enemyTargetTank = spawnGroundUnit(aaState, "enemy", "4", 160);
+  const enemyTargetTank = spawnGroundUnit(aaState, "enemy", "3", 160);
   const hpBefore = enemyTargetTank.hp;
 
   stepSimulation(aaState, {});
@@ -1419,8 +1499,8 @@ test("Ground units stop to shoot enemy troops/bunkers and AA flak trucks deal in
 test("Damaged ground units move slower, fire slower, and damaged AA fires only slow SAMs until repaired", () => {
   // 1. Damaged MBT moves slower and fires slower than healthy MBT
   const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
-  const healthyMbt = spawnGroundUnit(state, "allied", "4", -3000);
-  const damagedMbt = spawnGroundUnit(state, "allied", "4", -3000);
+  const healthyMbt = spawnGroundUnit(state, "allied", "3", -3000);
+  const damagedMbt = spawnGroundUnit(state, "allied", "3", -3000);
   damagedMbt.hp = Math.round(damagedMbt.maxHp * 0.2); // 20% HP
 
   assert.ok(getGroundUnitSpeedMultiplier(damagedMbt) < 1);
@@ -1435,8 +1515,8 @@ test("Damaged ground units move slower, fire slower, and damaged AA fires only s
   const fireState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
   fireState.bunkers[1].owner = "enemy"; // x = -1800
   fireState.bunkers[1].hp = 5000;
-  const hTank = spawnGroundUnit(fireState, "allied", "4", -2050);
-  const dTank = spawnGroundUnit(fireState, "allied", "4", -2050);
+  const hTank = spawnGroundUnit(fireState, "allied", "3", -2050);
+  const dTank = spawnGroundUnit(fireState, "allied", "3", -2050);
   dTank.hp = Math.round(dTank.maxHp * 0.25);
   stepSimulation(fireState, {});
   assert.ok(dTank.fireCooldown > hTank.fireCooldown, "Damaged MBT has longer fire cooldown (slower rate of fire)");
@@ -1460,7 +1540,7 @@ test("Damaged ground units move slower, fire slower, and damaged AA fires only s
   assert.ok(damagedAa.samCooldown > UNIT_CONFIG.aa_truck.samCooldownTicks, "Damaged AA reloads SAMs more slowly");
 
   // Repair AA back to full HP with Supply Truck aura -> fast SAM capability returns
-  const supply = spawnGroundUnit(aaState, "enemy", "7", 50);
+  const supply = spawnGroundUnit(aaState, "enemy", "6", 50);
   assert.ok(supply);
   for (let t = 0; t < 240; t++) {
     fastJet.x = -550;
@@ -1482,4 +1562,705 @@ test("Damaged ground units move slower, fire slower, and damaged AA fires only s
   const restoredSam = aaState.projectiles.find((p) => p.kind === "sam_missile");
   assert.ok(restoredSam, "Repaired AA fires SAM");
   assert.equal(restoredSam.samProfile, "fast", "Repaired AA regains fast SAM capability against fast targets");
+});
+
+test("Aircraft take zero friendly fire from friendly aircraft or ground troops and projectiles pass straight through", () => {
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const alliedShooter = addPlayer(state, "p1", "allied", "heli");
+  alliedShooter.x = 0;
+  alliedShooter.y = 200;
+  alliedShooter.dir = 1;
+
+  const alliedWingman = addPlayer(state, "p2", "allied", "p47");
+  alliedWingman.x = 120;
+  alliedWingman.y = 190;
+  alliedWingman.vx = 0;
+  alliedWingman.speed = 0;
+  alliedWingman.dir = 1;
+
+  const enemyTarget = addPlayer(state, "e1", "enemy", "heli");
+  enemyTarget.x = 300;
+  enemyTarget.y = 190;
+  enemyTarget.vx = 0;
+  enemyTarget.dir = -1;
+
+  const wingmanStartHp = alliedWingman.hp;
+  const enemyStartHp = enemyTarget.hp;
+
+  // 1. Allied primary gun bullet & heli_missile pass straight through friendly wingman to hit enemy behind
+  stepSimulation(state, { p1: { firePrimary: true, fireSecondary: true } });
+  for (let t = 0; t < 40; t++) {
+    alliedWingman.x = 120;
+    alliedWingman.y = 190;
+    alliedWingman.vx = 0;
+    enemyTarget.x = 300;
+    enemyTarget.y = 190;
+    enemyTarget.vx = 0;
+    stepSimulation(state, { p1: {}, p2: {}, e1: {} });
+  }
+  assert.equal(alliedWingman.hp, wingmanStartHp, "Friendly bullets and missiles pass straight through friendly aircraft");
+  assert.ok(enemyTarget.hp < enemyStartHp, "Projectiles continue past friendly aircraft and strike enemy behind");
+
+  // 2. Friendly ground projectiles (tank_shell & sam_missile) also pass through friendly aircraft without damage
+  state.projectiles.push(
+    {
+      id: "ff_tank_shell",
+      kind: "tank_shell",
+      team: "allied",
+      x: 100,
+      y: 212,
+      vx: 680,
+      vy: 0,
+      damage: 65,
+      lifeTicks: 60
+    },
+    {
+      id: "ff_sam",
+      kind: "sam_missile",
+      guided: false,
+      samProfile: "fast",
+      team: "allied",
+      x: 100,
+      y: 212,
+      vx: 760,
+      vy: 0,
+      speed: 760,
+      damage: 65,
+      lifeTicks: 60
+    }
+  );
+  for (let t = 0; t < 5; t++) {
+    alliedWingman.x = 120;
+    alliedWingman.y = 190;
+    stepSimulation(state, { p1: {}, p2: {}, e1: {} });
+  }
+  assert.equal(alliedWingman.hp, wingmanStartHp, "Friendly tank shells and SAMs pass straight through friendly aircraft");
+  assert.ok(state.projectiles.some((p) => p.id === "ff_tank_shell" && p.x > 130), "Friendly tank shell stays alive after passing through friendly plane");
+  assert.ok(state.projectiles.some((p) => p.id === "ff_sam" && p.x > 130), "Friendly SAM stays alive after passing through friendly plane");
+});
+
+test("Non-AA ground units have strictly horizontal line of fire and never shoot overhead or at angles, while AA trucks shoot angled SAMs", () => {
+  // 1. Low-flying enemy helicopter directly inside horizontal line of fire -> tank, infantry, and howitzer advance and fire horizontally (vy === 0)
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const lowHeli = addPlayer(state, "p1", "allied", "heli");
+  lowHeli.x = -220;
+  lowHeli.y = 18;
+  lowHeli.vx = 0;
+
+  const enemyTank = spawnGroundUnit(state, "enemy", "3", -40);
+  const enemyInf = spawnGroundUnit(state, "enemy", "1", -30);
+  const enemyHowi = spawnGroundUnit(state, "enemy", "4", 120);
+  const heliStartHp = lowHeli.hp;
+
+  let sawTankShot = false;
+  let sawInfShot = false;
+  let sawHowiShot = false;
+  for (let t = 0; t < 45; t++) {
+    lowHeli.x = -220;
+    lowHeli.y = 18;
+    lowHeli.vx = 0;
+    stepSimulation(state, { p1: {} });
+    for (const pr of state.projectiles) {
+      if (pr.kind !== "sam_missile") {
+        assert.equal(pr.vy, 0, `${pr.kind} travels strictly horizontally (vy === 0)`);
+      }
+      if (pr.ownerId === enemyTank.id) sawTankShot = true;
+      if (pr.ownerId === enemyInf.id) sawInfShot = true;
+      if (pr.ownerId === enemyHowi.id) sawHowiShot = true;
+    }
+    assert.ok(enemyTank.vx < 0, "Enemy tank continues marching toward enemy HQ without halting for low aircraft");
+    assert.ok(enemyInf.vx < 0, "Enemy infantry continues marching without halting for low aircraft");
+    assert.ok(enemyHowi.vx < 0, "Enemy howitzer continues marching without halting for low aircraft");
+  }
+  assert.ok(sawTankShot && sawInfShot && sawHowiShot, "Tank, infantry, and howitzer all open fire on aircraft inside their horizontal line of fire");
+  assert.ok(lowHeli.hp < heliStartHp, "Horizontal fire from marching ground units hits low-flying aircraft");
+
+  // 2. Aircraft at an upward angle or directly overhead -> tank, infantry, howitzer, and bunkers do NOT fire
+  const angledState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const angledHeli = addPlayer(angledState, "p1", "allied", "heli");
+  angledHeli.x = -220;
+  angledHeli.y = 75; // above horizontal swath (targetCenterY = 97 > originY + 32 = 60), within old maxAlt=115
+  spawnGroundUnit(angledState, "enemy", "3", -40);
+  spawnGroundUnit(angledState, "enemy", "1", -30);
+  spawnGroundUnit(angledState, "enemy", "4", 80);
+
+  for (let t = 0; t < 20; t++) {
+    angledHeli.x = -220;
+    angledHeli.y = 75;
+    stepSimulation(angledState, { p1: {} });
+  }
+  assert.equal(angledState.projectiles.length, 0, "Non-AA ground troops do not fire upward at an angle");
+
+  // Directly overhead (dxForward < 10) even at low altitude -> must NOT fire overhead
+  const overheadState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const overHeli = addPlayer(overheadState, "p1", "allied", "heli");
+  overHeli.x = -40;
+  overHeli.y = 25;
+  const oTank = spawnGroundUnit(overheadState, "enemy", "3", -40);
+  const oInf = spawnGroundUnit(overheadState, "enemy", "1", -40);
+  stepSimulation(overheadState, { p1: {} });
+  assert.equal(overheadState.projectiles.length, 0, "Ground troops do not fire overhead when aircraft is directly above them");
+  assert.ok(oTank.x < -40 && oInf.x < -40);
+
+  // 3. AA Flak Truck CAN fire SAM missiles upward at angles toward overhead/angled aircraft
+  const aaState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const highHeli = addPlayer(aaState, "p1", "allied", "heli");
+  highHeli.x = -120;
+  highHeli.y = 280;
+  spawnGroundUnit(aaState, "enemy", "2", 0);
+  stepSimulation(aaState, { p1: {} });
+  const sam = aaState.projectiles.find((p) => p.kind === "sam_missile");
+  assert.ok(sam, "AA Flak Truck still engages elevated aircraft with SAM");
+  assert.ok(sam.vy > 0, "AA Flak Truck SAM fires upward at an intercept angle");
+
+  // 4. Howitzer shells vs ground targets also travel strictly horizontally (vy === 0)
+  const groundState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const howi = spawnGroundUnit(groundState, "allied", "4", 0);
+  spawnGroundUnit(groundState, "enemy", "3", 450);
+  stepSimulation(groundState, {});
+  const shell = groundState.projectiles.find((p) => p.ownerId === howi.id && p.kind === "howitzer_shell");
+  assert.ok(shell, "Howitzer fires shell at ground enemy");
+  assert.equal(shell.vy, 0, "Howitzer shell fires along strictly horizontal trajectory");
+  const startY = shell.y;
+  stepSimulation(groundState, {});
+  assert.equal(shell.y, startY, "Howitzer shell maintains constant altitude along straight line of fire");
+});
+
+test("Helicopter picks up approaching infantry via Down or E and supports unlimited drop/parachute/re-pickup cycles", () => {
+  // 1. Holding ArrowDown while landed picks up approaching friendly infantry upon contact
+  const downState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const heli = addPlayer(downState, "p1", "allied", "heli");
+  heli.passengers = [];
+  heli.x = 400;
+  heli.y = 0;
+  const inf1 = spawnGroundUnit(downState, "allied", "1", 320);
+
+  for (let t = 0; t < 90; t++) {
+    stepSimulation(downState, { p1: { down: true } });
+    assert.equal(heli.alive, true, "Holding ArrowDown on ground never crashes helicopter");
+    if (heli.passengers.length === 1) break;
+  }
+  assert.equal(heli.passengers.length, 1, "Holding ArrowDown boards approaching infantry upon contact");
+  assert.equal(downState.units.includes(inf1), false, "Boarded infantry is removed from ground units");
+
+  // 2. Pressing E while approaching does not accidentally drop carried troop, and holding E boards upon contact
+  const eState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const eHeli = addPlayer(eState, "p1", "allied", "heli");
+  eHeli.passengers = ["infantry"];
+  eHeli.x = 400;
+  eHeli.y = 0;
+  spawnGroundUnit(eState, "allied", "1", 290); // 110m behind, approaching
+
+  assert.equal(handlePlayerUtility(eState, "p1"), false, "Pressing E while friendly infantry is approaching waits instead of dropping carried infantry");
+  assert.equal(eHeli.passengers.length, 1);
+
+  for (let t = 0; t < 90; t++) {
+    stepSimulation(eState, { p1: { utility: true } });
+    if (eHeli.passengers.length === 2) break;
+  }
+  assert.equal(eHeli.passengers.length, 2, "Holding E boards approaching infantry upon contact");
+
+  // 3. Unlimited drop-off / parachute / re-pickup cycles (5 consecutive cycles)
+  const loopState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const shuttle = addPlayer(loopState, "p1", "allied", "heli");
+  shuttle.passengers = ["infantry"];
+  shuttle.x = 300;
+  shuttle.y = 0;
+
+  for (let cycle = 0; cycle < 5; cycle++) {
+    // Alternate ground drop-off and airborne parachute drop-off
+    if (cycle % 2 === 0) {
+      shuttle.y = 0;
+      shuttle.vx = 0;
+      assert.equal(handlePlayerUtility(loopState, "p1"), true, `Cycle ${cycle}: drops infantry on ground`);
+      assert.equal(shuttle.passengers.length, 0);
+      // Let grace period pass and infantry walk ahead, then fly ahead & hold Down to pick back up
+      for (let t = 0; t < 70; t++) stepSimulation(loopState, { p1: {} });
+      const dropped = loopState.units.find((u) => u.kind === "infantry");
+      assert.ok(dropped, "Dropped ground infantry exists");
+      shuttle.x = dropped.x + 20;
+      shuttle.y = 0;
+      stepSimulation(loopState, { p1: { down: true } });
+    } else {
+      shuttle.y = 90;
+      shuttle.vx = 0;
+      assert.equal(handlePlayerUtility(loopState, "p1"), true, `Cycle ${cycle}: drops paratrooper from air`);
+      assert.equal(shuttle.passengers.length, 0);
+      for (let t = 0; t < 150; t++) stepSimulation(loopState, { p1: {} });
+      const landedPara = loopState.paratroopers.find((p) => p.team === "allied" && p.phase === "march");
+      assert.ok(landedPara, "Paratrooper landed and entered march phase");
+      shuttle.x = landedPara.x + 15;
+      shuttle.y = 0;
+      stepSimulation(loopState, { p1: { utility: true } });
+    }
+    assert.equal(shuttle.passengers.length, 1, `Cycle ${cycle}: successfully picks dropped/parachuted infantry back up`);
+  }
+});
+
+test("Renderer hides ground troop health bars, keeps aircraft health bars, and draws dumb bombs using v2_missile sprite without smoke trail", () => {
+  const fillRectCalls = [];
+  const drawImageCalls = [];
+  const ctx = {
+    fillStyle: "",
+    strokeStyle: "",
+    lineWidth: 1,
+    font: "",
+    textAlign: "left",
+    globalAlpha: 1,
+    setTransform() {},
+    createLinearGradient() { return { addColorStop() {} }; },
+    fillRect(x, y, w, h) { fillRectCalls.push({ x, y, w, h, fillStyle: this.fillStyle }); },
+    strokeRect() {},
+    beginPath() {},
+    moveTo() {},
+    lineTo() {},
+    closePath() {},
+    fill() {},
+    stroke() {},
+    ellipse() {},
+    arc() {},
+    save() {},
+    restore() {},
+    translate() {},
+    rotate() {},
+    scale() {},
+    setLineDash() {},
+    fillText() {},
+    drawImage(img, x, y, w, h) { drawImageCalls.push({ imgName: img.name, x, y, w, h }); }
+  };
+
+  const renderer = new SpriteBattlefieldRenderer({
+    width: 1280,
+    height: 720,
+    getContext: () => ctx,
+    getBoundingClientRect: () => ({ width: 1280, height: 720 })
+  });
+  for (const name of ["v2_missile", "main_battle_tank", "infantry", "inf_run_1", "heli_fly_1", "b52_bomber", "bunker", "base_hq", "v2_silo"]) {
+    renderer.sprites.set(name, { name, naturalWidth: 64, naturalHeight: 32 });
+    renderer.enemyTinted.set(name, { name: `${name}_enemy`, naturalWidth: 64, naturalHeight: 32 });
+  }
+
+  const state = createInitialState({ includePracticeTargets: true, includeCivilians: false });
+  state.tick = 1; // avoid periodic tick%4 random vehicle damage smoke during trail assertion
+  const localP = addPlayer(state, "p1", "allied", "p47");
+  localP.x = 0;
+  localP.y = 300;
+  const allyP = addPlayer(state, "p2", "allied", "heli");
+  allyP.x = 120;
+  allyP.y = 260;
+  allyP.hp = 175;
+  state.b52s.push({ id: "b52_1", team: "allied", x: 200, y: 400, vx: 340, dir: 1, hp: 450, maxHp: 900, alive: true });
+  const tank = spawnGroundUnit(state, "allied", "3", 60);
+  tank.hp = 325;
+  state.targets[0].x = -80;
+  state.targets[0].hp = 300;
+
+  state.projectiles.push(
+    { id: "b1", kind: "p47_bomb", team: "allied", x: 30, y: 200, vx: 380, vy: -80, fuelBurnedOut: true },
+    { id: "b2", kind: "b52_bomb", team: "allied", x: 180, y: 240, vx: 120, vy: -90, fuelBurnedOut: true }
+  );
+
+  renderer.camX = 0;
+  renderer.camY = 200;
+  renderer.camZoom = 1;
+
+  const hadWindow = "window" in globalThis;
+  const prevWindow = globalThis.window;
+  globalThis.window = { devicePixelRatio: 1 };
+  try {
+    renderer.render(state, "p1", 1 / 60);
+
+    // Ground troop health bars (48px target bar, 46px vehicle bar, 24px infantry bar) must NOT be drawn
+    assert.equal(fillRectCalls.some((c) => c.w === 48 && c.h === 5), false, "Practice target health bar is hidden");
+    assert.equal(fillRectCalls.some((c) => (c.w === 46 || c.w === 24) && c.h === 4), false, "Ground unit health bar is hidden");
+
+    // Aircraft health bars (44px non-local player bar, 80px B-52 bar) MUST remain visible
+    assert.equal(fillRectCalls.some((c) => c.w === 44 && c.h === 4), true, "Non-local aircraft health bar remains visible");
+    assert.equal(fillRectCalls.some((c) => c.w === 80 && c.h === 5), true, "B-52 aircraft health bar remains visible");
+
+    // Dumb bombs use v2_missile sprite without adding smokeTrail
+    const bombDraws = drawImageCalls.filter((c) => c.imgName === "v2_missile");
+    assert.equal(bombDraws.length, 2, "Both dumb bombs draw v2_missile sprite");
+    assert.equal(renderer.smokeTrail.length, 0, "Dumb bombs produce zero missile smoke/propulsion trail");
+
+    // Powered heli_missile draws v2_missile sprite AND emits smokeTrail
+    state.projectiles.push({ id: "m1", kind: "heli_missile", team: "allied", x: 40, y: 220, vx: 820, vy: 0, fuelBurnedOut: false });
+    renderer.render(state, "p1", 1 / 60);
+    assert.equal(renderer.smokeTrail.length, 1, "Powered heli_missile emits propulsion smoke trail");
+  } finally {
+    if (hadWindow) globalThis.window = prevWindow;
+    else delete globalThis.window;
+  }
+});
+
+test("Friendly aircraft damage their own ground units, paratroopers, and bunkers, while friendly ground fire does not hit friendly combat troops", () => {
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+
+  // 1. Allied Helicopter cannon & missile hit allied tank, paratrooper, and allied bunker
+  const shooter = addPlayer(state, "p1", "allied", "heli");
+  const alliedTank = spawnGroundUnit(state, "allied", "3", 150);
+  const tankStartHp = alliedTank.hp;
+
+  shooter.x = 20;
+  shooter.y = 14;
+  shooter.dir = 1;
+  shooter.vx = 0;
+  stepSimulation(state, { p1: { firePrimary: true, fireSecondary: true } });
+  for (let t = 0; t < 25; t++) stepSimulation(state, { p1: {} });
+  assert.ok(alliedTank.hp <= tankStartHp - AIRCRAFT_CONFIG.heli.missileDamage, "Friendly heli cannon & missile damage own ground tank");
+
+  // Friendly airborne heli bullet hits friendly paratrooper
+  const alliedPara = {
+    id: "para_ff",
+    team: "allied",
+    kind: "infantry",
+    x: 400,
+    y: 220,
+    vx: 0,
+    vy: 0,
+    dir: 1,
+    phase: "descent",
+    collapseTimer: 0,
+    walkPhase: 0,
+    hp: 40,
+    maxHp: 40,
+    fireCooldown: 0,
+    pickupGraceTicks: 0
+  };
+  state.paratroopers.push(alliedPara);
+  shooter.x = 300;
+  shooter.y = 224;
+  shooter.dir = 1;
+  shooter.vx = 0;
+  stepSimulation(state, { p1: { firePrimary: true } });
+  for (let t = 0; t < 20; t++) {
+    alliedPara.y = 232;
+    stepSimulation(state, { p1: {} });
+  }
+  assert.ok(alliedPara.hp < 40, "Friendly aircraft gunfire damages own paratrooper");
+
+  // Friendly P-47 dumb bomb damages own allied bunker
+  state.bunkers[1].owner = "allied"; // x = -1800
+  state.bunkers[1].hp = 1000;
+  const bomber = addPlayer(state, "p2", "allied", "p47");
+  bomber.x = -1940;
+  bomber.y = 140;
+  bomber.dir = 1;
+  bomber.speed = 230;
+  bomber.vx = 230;
+  stepSimulation(state, { p2: { right: true, fireSecondary: true } });
+  for (let t = 0; t < 80; t++) stepSimulation(state, { p2: { right: true } });
+  assert.ok(state.bunkers[1].hp < 1000, "Friendly P-47 dumb bomb damages own team's bunker");
+
+  // Friendly B-52 carpet bomb damages own team's ground tank
+  state.specialWeapons.allied.available = 1;
+  const bombVictimTank = spawnGroundUnit(state, "allied", "3", 1200);
+  const victimStartHp = bombVictimTank.hp;
+  const b52 = launchSpecialWeapon(state, "p2", "b52", { targetX: 1200 });
+  b52.x = 420; // start just before [450..1950] drop strip so sequential bombs hit across [724..2224]
+  for (let t = 0; t < 260; t++) {
+    bombVictimTank.x = 1200;
+    stepSimulation(state, {});
+  }
+  assert.ok(bombVictimTank.hp < victimStartHp, "Friendly B-52 carpet bombs damage own team's ground units");
+
+  // 2. Ground-to-ground friendly fire still passes safely through friendly combat units & bunkers
+  const gState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  gState.bunkers[2].owner = "allied"; // x = 0
+  gState.bunkers[2].hp = 1000;
+  spawnGroundUnit(gState, "allied", "3", -250);
+  const alliedInfScreen = spawnGroundUnit(gState, "allied", "1", -120);
+  const enemyTarget = spawnGroundUnit(gState, "enemy", "6", 120); // unarmed supply truck doesn't fire back at bunker
+  const enemyStart = enemyTarget.hp;
+
+  for (let t = 0; t < 60; t++) {
+    alliedInfScreen.x = -120; // keep between allied shooter and enemy target
+    stepSimulation(gState, {});
+  }
+  assert.equal(alliedInfScreen.hp, alliedInfScreen.maxHp, "Friendly tank shells pass through friendly infantry without friendly fire");
+  assert.equal(gState.bunkers[2].hp, 1000, "Friendly tank shells pass through friendly bunkers without friendly fire");
+  assert.ok(enemyTarget.hp < enemyStart, "Friendly tank still hits enemy unit beyond friendly troops/bunker");
+});
+
+test("Ambulances deploy from Main Base HQ and return civilians strictly to Main Base HQ past friendly bunkers", () => {
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  addPlayer(state, "p1", "allied", "heli");
+  state.teamFunds.allied = 500;
+
+  // Give allied team ownership of ALL 5 bunkers
+  for (const b of state.bunkers) {
+    b.owner = "allied";
+    b.hp = 1000;
+  }
+
+  // 1. Requisitioning an ambulance spawns it at Main Base HQ, never at a forward bunker
+  const amb = handlePlayerRequisition(state, "p1", "5");
+  assert.ok(amb);
+  assert.equal(amb.x, BASES.allied.hqX + 120, "Ambulance deploys strictly from allied Main Base HQ");
+
+  // Place ambulance near bunker 1 (-1800) with a civilian just east of bunker 2 (0)
+  amb.x = -1400;
+  spawnCivilian(state, -1000);
+
+  let passedBunker1 = false;
+  let passedBunker0 = false;
+  let rescuedAtHq = false;
+
+  for (let t = 0; t < 3800; t++) {
+    stepSimulation(state, { p1: {} });
+    if (amb.passengers.length > 0) {
+      if (amb.x <= state.bunkers[1].x) {
+        passedBunker1 = true;
+        assert.equal(
+          state.events.some((e) => e.type === "civilians_rescued"),
+          false,
+          "Ambulance does NOT unload civilians at friendly Bunker 1 (-1800)"
+        );
+        assert.equal(amb.passengers.length, 1, "Civilian remains onboard passing Bunker 1");
+      }
+      if (amb.x <= state.bunkers[0].x) {
+        passedBunker0 = true;
+        assert.equal(
+          state.events.some((e) => e.type === "civilians_rescued"),
+          false,
+          "Ambulance does NOT unload civilians at friendly Bunker 0 (-3600)"
+        );
+        assert.equal(amb.passengers.length, 1, "Civilian remains onboard passing Bunker 0");
+      }
+    }
+    const rescueEv = state.events.find((e) => e.type === "civilians_rescued" && e.by === "ambulance");
+    if (rescueEv) {
+      rescuedAtHq = true;
+      assert.ok(
+        Math.abs(amb.x - BASES.allied.hqX) <= 145,
+        "Ambulance only unloads civilians upon reaching Main Base HQ"
+      );
+      break;
+    }
+  }
+
+  assert.equal(passedBunker1, true, "Ambulance drove past friendly Bunker 1 on return trip");
+  assert.equal(passedBunker0, true, "Ambulance drove past friendly Bunker 0 on return trip");
+  assert.equal(rescuedAtHq, true, "Ambulance unloaded civilians at Main Base HQ");
+
+  // 2. Empty idle ambulance with no remaining civilians stages back to Main Base HQ instead of stopping at bunkers
+  const idleAmb = spawnGroundUnit(state, "allied", "5", state.bunkers[1].x + 20);
+  for (let t = 0; t < 20; t++) stepSimulation(state, { p1: {} });
+  assert.ok(idleAmb.x < state.bunkers[1].x && idleAmb.vx < 0, "Idle ambulance returns west toward Main Base HQ instead of holding at bunker");
+});
+
+test("Special weapon bonus unlocks from 10 civilian rescues (20 with >1 heli), once per game, and is shared by teammates", () => {
+  // 1. Single helicopter on team -> goal is 10 civilians
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const heli = addPlayer(state, "p1", "allied", "heli");
+  const wingman = addPlayer(state, "p2", "allied", "p47");
+  assert.equal(getCivilianSpecialGoal(state, "allied"), SPECIAL_WEAPON_CIV_GOAL_BASE);
+  assert.equal(state.specialWeapons.allied.available, 0);
+
+  // Rescue 6 civilians + 3 via ambulance = 9 -> still locked
+  heli.passengers = ["civilian", "civilian", "civilian", "civilian", "civilian", "civilian"];
+  heli.x = BASES.allied.padCenterX;
+  heli.y = 0;
+  stepSimulation(state, { p1: {} });
+  assert.equal(state.stats.allied.civiliansRescued, 6);
+  assert.equal(state.specialWeapons.allied.available, 0);
+
+  const amb = spawnGroundUnit(state, "allied", "5", BASES.allied.hqX + 40);
+  amb.passengers = ["civilian", "civilian", "civilian"];
+  amb.returningToBase = true;
+  stepSimulation(state, { p1: {} });
+  assert.equal(state.stats.allied.civiliansRescued, 9);
+  assert.equal(state.specialWeapons.allied.available, 0, "9 rescued civilians is one short of the 10-rescue unlock goal");
+
+  // 10th rescued civilian unlocks 1 team special weapon
+  amb.passengers = ["civilian"];
+  amb.returningToBase = true;
+  stepSimulation(state, { p1: {} });
+  assert.equal(state.stats.allied.civiliansRescued, 10);
+  assert.equal(state.specialWeapons.allied.available, 1);
+  assert.equal(state.specialWeapons.allied.civilianEarned, true);
+  assert.ok(
+    state.events.some((e) => e.type === "special_weapon_unlocked" && e.team === "allied" && e.reason === "civilians"),
+    "10th rescued civilian emits special_weapon_unlocked event"
+  );
+
+  // Teammate P-47 (who did not rescue civilians) chooses V2 ('x'), using up the shared special weapon so B-52 cannot also launch
+  const v2 = launchSpecialWeapon(state, "p2", "x");
+  assert.ok(v2, "Teammate can launch the team's unlocked special weapon (X -> V2)");
+  assert.equal(wingman.controllingV2Id, v2.id);
+  assert.equal(state.specialWeapons.allied.available, 0, "Choosing V2 consumes the earned special weapon");
+  assert.equal(launchSpecialWeapon(state, "p1", "z"), false, "Cannot also launch B-52 after choosing V2");
+
+  // Rescuing 10+ more civilians never grants civilian bonus a second time in the same match
+  amb.passengers = ["civilian", "civilian", "civilian", "civilian", "civilian", "civilian"];
+  amb.returningToBase = true;
+  stepSimulation(state, { p1: {} });
+  amb.passengers = ["civilian", "civilian", "civilian", "civilian", "civilian"];
+  amb.returningToBase = true;
+  stepSimulation(state, { p1: {} });
+  assert.equal(state.stats.allied.civiliansRescued, 21);
+  assert.equal(state.specialWeapons.allied.available, 0, "Civilian rescue special weapon bonus is awarded only once per game");
+
+  // 2. More than 1 helicopter on team -> civilian goal increases to 20
+  const multiState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const h1 = addPlayer(multiState, "p1", "allied", "heli");
+  addPlayer(multiState, "p2", "allied", "heli");
+  assert.equal(getCivilianSpecialGoal(multiState, "allied"), SPECIAL_WEAPON_CIV_GOAL_MULTI_HELI);
+
+  const mAmb = spawnGroundUnit(multiState, "allied", "5", BASES.allied.hqX + 40);
+  mAmb.passengers = Array(10).fill("civilian");
+  mAmb.returningToBase = true;
+  stepSimulation(multiState, {});
+  assert.equal(multiState.stats.allied.civiliansRescued, 10);
+  assert.equal(multiState.specialWeapons.allied.available, 0, "With >1 heli on team, 10 rescues does NOT unlock yet");
+
+  mAmb.passengers = Array(9).fill("civilian");
+  mAmb.returningToBase = true;
+  stepSimulation(multiState, {});
+  assert.equal(multiState.specialWeapons.allied.available, 0, "19 rescues still locked when goal is 20");
+
+  h1.passengers = ["civilian"];
+  h1.x = BASES.allied.padCenterX;
+  h1.y = 0;
+  stepSimulation(multiState, {});
+  assert.equal(multiState.stats.allied.civiliansRescued, 20);
+  assert.equal(multiState.specialWeapons.allied.available, 1, "20th rescued civilian unlocks special weapon with 2 helis on team");
+});
+
+test("Special weapon accuracy bonus unlocks on 100% single-raid enemy ground hits (no rearming/missing) and caps total bonuses at 2 per game", () => {
+  // Helper: place bomber directly above stationary enemy tanks & drop all 12 dumb bombs without landing
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const p47 = addPlayer(state, "p1", "allied", "p47");
+
+  for (let shot = 0; shot < AIRCRAFT_CONFIG.p47.maxSecondary; shot++) {
+    const enemyTank = spawnGroundUnit(state, "enemy", "3", 200);
+    enemyTank.hp = 145; // destroyed cleanly in 1 direct bomb hit
+    enemyTank.vx = 0;
+    p47.x = 145; // lead distance ~55m for y=60 ballistic drop onto enemyTank at 200
+    p47.y = 60;
+    p47.pitch = 0;
+    p47.vx = 230;
+    p47.vy = 0;
+    p47.speed = 230;
+    p47.secondaryCooldown = 0;
+    stepSimulation(state, { p1: { fireSecondary: true } });
+    // Let bomb fall and strike enemy tank before dropping next bomb
+    for (let t = 0; t < 50; t++) {
+      p47.y = 140;
+      p47.speed = 250;
+      p47.vx = 250;
+      enemyTank.x = 200;
+      stepSimulation(state, { p1: { right: true } });
+      if (state.projectiles.length === 0) break;
+    }
+    if (shot < AIRCRAFT_CONFIG.p47.maxSecondary - 1) {
+      assert.equal(state.specialWeapons.allied.available, 0, `Before bomb ${shot + 1}/${AIRCRAFT_CONFIG.p47.maxSecondary} completes raid, special weapon stays locked`);
+    }
+  }
+  assert.equal(state.specialWeapons.allied.accuracyEarned, true, "12/12 P-47 bombs hitting enemy ground units in 1 raid unlocks accuracy bonus");
+  assert.equal(state.specialWeapons.allied.available, 1);
+
+  // Doing another 100% raid on same team NEVER grants accuracy bonus a second time; civilian bonus + accuracy bonus caps at 2 total
+  const teammate = addPlayer(state, "p2", "allied", "heli");
+  for (let shot = 0; shot < AIRCRAFT_CONFIG.heli.maxSecondary; shot++) {
+    const t2 = spawnGroundUnit(state, "enemy", "3", 200);
+    teammate.x = 120;
+    teammate.y = 16;
+    teammate.dir = 1;
+    teammate.vx = 0;
+    teammate.pitch = 0;
+    teammate.secondaryCooldown = 0;
+    stepSimulation(state, { p2: { fireSecondary: true } });
+    for (let t = 0; t < 20; t++) {
+      teammate.y = 16;
+      t2.x = 200;
+      stepSimulation(state, { p2: {} });
+      if (state.projectiles.length === 0) break;
+    }
+  }
+  assert.equal(state.specialWeapons.allied.earnedCount, 1, "Accuracy bonus is awarded at most once per game");
+
+  // Combine with the 10-civilian rescue bonus -> max 2 special weapons earned in a single game
+  const amb = spawnGroundUnit(state, "allied", "5", BASES.allied.hqX + 40);
+  amb.passengers = Array(10).fill("civilian");
+  amb.returningToBase = true;
+  stepSimulation(state, {});
+  assert.equal(state.specialWeapons.allied.available, 2);
+  assert.equal(state.specialWeapons.allied.earnedCount, 2, "Total special weapons earned per game caps at 2 (1 civilian + 1 accuracy)");
+
+  // Helicopter 8/8 single-raid accuracy unlock & negative cases (missing 1, hitting bunker, landing to rearm mid-raid)
+  const heliState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const heli = addPlayer(heliState, "h1", "allied", "heli");
+  for (let shot = 0; shot < AIRCRAFT_CONFIG.heli.maxSecondary; shot++) {
+    const tUnit = spawnGroundUnit(heliState, "enemy", "3", 200);
+    tUnit.hp = 160; // destroyed in 1 direct missile hit
+    tUnit.fireCooldown = 60; // hold fire during synthetic point-blank missile volley
+    heli.x = 120;
+    heli.y = 16;
+    heli.dir = 1;
+    heli.vx = 0;
+    heli.pitch = 0;
+    heli.secondaryCooldown = 0;
+    stepSimulation(heliState, { h1: { fireSecondary: true } });
+    for (let t = 0; t < 20; t++) {
+      heli.y = 16;
+      tUnit.x = 200;
+      stepSimulation(heliState, { h1: {} });
+      if (heliState.projectiles.length === 0) break;
+    }
+  }
+  assert.equal(heliState.specialWeapons.allied.accuracyEarned, true, "8/8 heli missiles hitting enemy ground units unlocks accuracy bonus");
+
+  // Negative case A: landing & rearming between shot 6 and shot 7 prevents single-raid unlock
+  const rearmState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const rJet = addPlayer(rearmState, "p1", "allied", "p47");
+  for (let shot = 0; shot < 6; shot++) {
+    const et = spawnGroundUnit(rearmState, "enemy", "3", 200);
+    et.hp = 145;
+    rJet.x = 145; rJet.y = 60; rJet.pitch = 0; rJet.vx = 230; rJet.vy = 0; rJet.speed = 230; rJet.secondaryCooldown = 0;
+    stepSimulation(rearmState, { p1: { fireSecondary: true } });
+    for (let t = 0; t < 40; t++) {
+      rJet.y = 140; rJet.speed = 250; et.x = 200;
+      stepSimulation(rearmState, { p1: { right: true } });
+      if (rearmState.projectiles.length === 0) break;
+    }
+  }
+  // Land at base & rearm 1 bomb -> breaks raid streak!
+  rJet.x = BASES.allied.padCenterX;
+  rJet.y = 0;
+  rJet.vx = 0;
+  rJet.speed = 0;
+  for (let t = 0; t < 35; t++) stepSimulation(rearmState, { p1: {} });
+  assert.equal(rJet.raidHits, 0, "Rearming at base resets current single-raid accuracy progress");
+  for (let shot = 0; shot < 6; shot++) {
+    const et = spawnGroundUnit(rearmState, "enemy", "3", 200);
+    et.hp = 145;
+    rJet.x = 145; rJet.y = 60; rJet.pitch = 0; rJet.vx = 230; rJet.vy = 0; rJet.speed = 230; rJet.secondaryCooldown = 0;
+    stepSimulation(rearmState, { p1: { fireSecondary: true } });
+    for (let t = 0; t < 40; t++) {
+      rJet.y = 140; rJet.speed = 250; et.x = 200;
+      stepSimulation(rearmState, { p1: { right: true } });
+      if (rearmState.projectiles.length === 0) break;
+    }
+  }
+  assert.equal(rearmState.specialWeapons.allied.accuracyEarned, false, "6 hits + rearm + 6 hits does NOT unlock single-raid bonus");
+
+  // Negative case B: hitting an enemy bunker (not a ground unit) fails the 100% raid check
+  const missState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const mHeli = addPlayer(missState, "p1", "allied", "heli");
+  missState.bunkers[2].owner = "enemy";
+  missState.bunkers[2].hp = 5000;
+  // First shot hits enemy bunker instead of enemy ground unit
+  mHeli.x = -120; mHeli.y = 20; mHeli.dir = 1; mHeli.vx = 0; mHeli.pitch = 0;
+  stepSimulation(missState, { p1: { fireSecondary: true } });
+  for (let t = 0; t < 25; t++) { mHeli.y = 20; stepSimulation(missState, { p1: {} }); }
+  for (let shot = 1; shot < AIRCRAFT_CONFIG.heli.maxSecondary; shot++) {
+    const et = spawnGroundUnit(missState, "enemy", "3", 400);
+    et.hp = 160;
+    et.fireCooldown = 60;
+    mHeli.x = 320; mHeli.y = 16; mHeli.dir = 1; mHeli.vx = 0; mHeli.secondaryCooldown = 0;
+    stepSimulation(missState, { p1: { fireSecondary: true } });
+    for (let t = 0; t < 20; t++) { mHeli.y = 16; et.x = 400; stepSimulation(missState, { p1: {} }); }
+  }
+  assert.equal(missState.specialWeapons.allied.accuracyEarned, false, "Hitting bunker instead of ground unit fails 100% accuracy raid");
 });
