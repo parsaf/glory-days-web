@@ -7,11 +7,11 @@ This file captures the architecture, file map, invariants, and verification comm
 ## 1. Project Goals & Architecture
 
 - **Concept:** 2.5D side-scrolling arcade air-combat + lane-based RTS multiplayer game (*Glory Days 2*-inspired) built as a lightweight browser app.
-- **Tech Stack (Zero External npm Dependencies):**
-  - **Runtime:** Node.js ESM (`>= 22.0.0`, `/Users/parsa/.nvm/versions/node/v22.14.0/bin/node`). Zero `node_modules`; pure `.mjs` everywhere.
+- **Tech Stack (Lean Dependencies — Prefer Built-Ins):**
+  - **Runtime:** Node.js ESM (`>= 22.0.0`, `/Users/parsa/.nvm/versions/node/v22.14.0/bin/node`). Prefer built-in Node/browser APIs and pure `.mjs` where practical; adding external `npm` packages is allowed when there is clear payoff.
   - **Server (`server/index.mjs`):** Native `node:http` static file server + custom RFC 6455 WebSockets over `node:crypto` (`upgrade` on `/ws`). Runs a fixed **60 Hz** (`DT = 1/60`) authoritative simulation loop across rooms (`ALPHA`, `BRAVO`, `CHARLIE`, plus custom rooms) and broadcasts **20 Hz** (`SNAPSHOT_INTERVAL_TICKS = 3`) compact snapshots.
   - **Shared Core (`shared/`):** Identical deterministic simulation & constants imported by both Node (`server/index.mjs`, `tests/simulation.test.mjs`) and the browser (`public/js/*.mjs`).
-  - **Client (`public/`):** HTML5 2D Canvas layered parallax sprite renderer using 42 transparent PNG sprites (`public/assets/sprites/*.png`) with cached hue-shifted enemy sprites, DS-inspired bottom command deck HUD, 12,000m tactical radar strip, procedural Web Audio SFX, and 60 Hz client-side prediction + snapshot reconciliation.
+  - **Client (`public/`):** HTML5 2D Canvas layered parallax sprite renderer using 42 transparent PNG sprites (`public/assets/sprites/*.png`) and layered desert warfare landscape assets (`public/assets/landscape/*.png`) with cached hue-shifted enemy sprites, DS-inspired bottom command deck HUD, 12,000m tactical radar strip, procedural Web Audio SFX, and 60 Hz client-side prediction + snapshot reconciliation.
 - **Design Reference Docs:**
   - `GAME_DESIGN_SPEC.md` — Canonical gameplay mechanics, weapon rules, economy, units, and UI spec.
   - `PHASE_2_3_HANDOFF.md` — Sprite catalog, coordinate conventions, and Flight Lab isolation details.
@@ -23,8 +23,8 @@ This file captures the architecture, file map, invariants, and verification comm
 1. **Flight Lab Isolation (Do Not Break P-47 Tuning):**
    - **Never modify** `public/flight-lab.html` or `public/js/flight_lab.mjs` unless explicitly tasked with Flight Lab work.
    - **Preserve** `P47_TUNING_SCHEMA`, `DEFAULT_P47_CONFIG` (`shared/constants.mjs`), and `updateP47Config`, `updateP47`, `updateCrashSlide` (`shared/simulation.mjs`).
-2. **Zero External Dependencies:**
-   - Do not add `package.json` dependencies (`ws`, `vite`, `three`, etc.). Keep pure ES modules and Node built-ins (`node:http`, `node:crypto`, `node:test`, `node:assert/strict`).
+2. **Lean Dependency Policy:**
+   - Prefer doing the most with existing Node/browser built-ins (`node:http`, `node:crypto`, `node:test`, `node:assert/strict`) and pure ES modules, but adding external `npm` packages to `package.json` is acceptable when there is clear payoff.
 3. **Dual Browser + Node Relative Import Paths:**
    - Modules under `public/js/*.mjs` **must** import shared files using relative `../../shared/...` paths (never `/shared/...`). `server/index.mjs` resolves `/shared/*` requests to `shared/*` for the browser, while Node tests resolve `../../shared/...` directly on disk.
 4. **Strict Keyboard Gameplay & Non-Blocking Base Landing:**
@@ -70,7 +70,7 @@ PORT=3001 /Users/parsa/.nvm/versions/node/v22.14.0/bin/node server/index.mjs
 | `public/js/main.mjs` | Client bootstrap (`localStorage` key `glory_days_p47_config_v2`), `/ws` lifecycle with offline sandbox fallback, lobby/HUD callbacks, `dispatchEvents` dedup (`seenEventKeys`), 60 Hz prediction `loop(now)`. |
 | `public/js/input.mjs` | `KeyboardInput`: lobby hotkeys (`Enter`/`Space`, `ArrowLeft`/`ArrowRight`, `1`/`2`, `M`, `B`, `N`) and gameplay controls (`Arrow*`, `A`, `S`, `Z`, `E`, `Q`, `0–9`, `R`, `L`, `M`, `B`, `N`, `Escape`), `resolveCode(e)`, `getSnapshot()`. |
 | `public/js/hud.mjs` | `TacticalHud`: lobby UI sync, HQ bars, funds, bunker pips, `Q` drawer cards, burst/ammo/flare/cabin readouts, victory scoreboard, `drawRadar` 12,000m minimap. |
-| `public/js/renderer.mjs` | `SpriteBattlefieldRenderer`: preloads 42 sprites, `getEnemyCanvas` hue-shift cache, smooth camera look-ahead & zoom, parallax sky/mountains, ground entities, B-52 aiming overlay, projectiles, flares, smoke/explosions/floating labels. |
+| `public/js/renderer.mjs` | `SpriteBattlefieldRenderer`: preloads 42 sprites and layered Option 3 desert warfare landscape (`public/assets/landscape/*.png`), `getEnemyCanvas` hue-shift cache, smooth camera look-ahead & zoom, gradient light-blue sky with clouds, distant sea horizon, parallax dunes/ground cutaway & sparse desert fortifications, ground entities, B-52 aiming overlay, projectiles, flares, smoke/explosions/floating labels. |
 | `public/js/audio.mjs` | `BattlefieldAudio`: procedural Web Audio API SFX synthesizer driven by simulation events (`primary_fired`, `secondary_fired`, `flare_deployed`, `sam_launched`, `explosion`, `civilians_rescued`, `bunker_captured`, `b52_raid_called`, `v2_launched`, `match_won`). |
 | `public/flight-lab.html` & `public/js/flight_lab.mjs` | Standalone P-47 physics tuning & test scenario gym (off-limits unless requested). |
 | `public/js/dev_tuner.mjs` | Legacy unused tuner drawer module kept for reference. |
