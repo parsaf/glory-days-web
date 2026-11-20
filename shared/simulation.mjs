@@ -26,6 +26,9 @@ import {
   GROUND_BEHAVIOR_CONFIG,
   GROUND_Y,
   HELI_BOT_CONFIG,
+  HELI_MISSILE_BOOST_TICKS,
+  HELI_MISSILE_DROP_TICKS,
+  HELI_MISSILE_UNBOOSTED_DAMAGE_MULT,
   MATCH_MODES,
   MAX_X,
   MIN_X,
@@ -1862,8 +1865,12 @@ function updateWeapons(state, player, input) {
         ? player.pitch + (cfg.primaryAngleDeg * Math.PI) / 180
         : (player.effectivePitch ?? player.pitch);
       const speed = cfg.primarySpeed;
-      const vx = player.dir * speed * Math.cos(angle) + player.vx * 0.25;
-      const vy = speed * Math.sin(angle);
+      const forwardCarry = player.aircraftType === "p47"
+        ? Math.max(0, player.speed || Math.abs(player.vx))
+        : Math.max(0, player.vx * player.dir);
+      const muzzleSpeed = speed + forwardCarry;
+      const vx = player.dir * muzzleSpeed * Math.cos(angle);
+      const vy = muzzleSpeed * Math.sin(angle);
       state.projectiles.push({
         id: `proj_${state.nextEntityId++}`,
         kind: "bullet",
@@ -1876,8 +1883,9 @@ function updateWeapons(state, player, input) {
         vy,
         damage: cfg.primaryDamage,
         distanceTraveled: 0,
+        maxRange: cfg.primaryRange,
         fuelBurnedOut: false,
-        lifeTicks: 90
+        lifeTicks: 150
       });
       player.primaryCooldown = player.burstReservoir > 0 ? BURST_FIRE_INTERVAL : SLOW_FIRE_INTERVAL;
       state.events.push({ type: "primary_fired", playerId: player.id, burst: player.burstReservoir > 0, tick: state.tick });
@@ -1902,10 +1910,13 @@ function updateWeapons(state, player, input) {
     player.raidShotsFired = (player.raidShotsFired || 0) + 1;
 
     if (player.aircraftType === "heli") {
-      // Helicopter straight-trajectory fuel-limited missile (hits air OR ground!)
+      // Helicopter missile: slight drop beneath heli followed shortly by rapid booster ignition & cruise
       const angle = player.pitch;
-      const vx = player.dir * cfg.missileSpeed * Math.cos(angle);
-      const vy = cfg.missileSpeed * Math.sin(angle);
+      const forwardCarry = Math.max(0, player.vx * player.dir);
+      const dropVx = player.dir * (forwardCarry * 0.85 + 45);
+      const dropVy = Math.min(0, player.vy * 0.35) - 85;
+      const fullDamage = cfg.missileDamage;
+      const fullAirDamage = cfg.missileAirDamage ?? cfg.missileDamage;
       state.projectiles.push({
         id: `proj_${state.nextEntityId++}`,
         kind: "heli_missile",
@@ -1915,11 +1926,22 @@ function updateWeapons(state, player, input) {
         isPlayerSecondary: true,
         raidId: player.raidId,
         scoredGroundUnitHit: false,
-        x: player.x + player.dir * 34,
-        y: player.y + 12,
-        vx,
-        vy,
-        damage: cfg.missileDamage,
+        x: player.x + player.dir * 26,
+        y: player.y + 8,
+        vx: dropVx,
+        vy: dropVy,
+        launchDir: player.dir,
+        launchAngle: angle,
+        targetSpeed: cfg.missileSpeed,
+        missileStage: "drop",
+        dropTicksRemaining: HELI_MISSILE_DROP_TICKS,
+        boostTicksElapsed: 0,
+        boostTotalTicks: HELI_MISSILE_BOOST_TICKS,
+        boostStartSpeed: 0,
+        fullDamage,
+        fullAirDamage,
+        damage: Math.round(fullDamage * HELI_MISSILE_UNBOOSTED_DAMAGE_MULT),
+        airDamage: Math.round(fullAirDamage * HELI_MISSILE_UNBOOSTED_DAMAGE_MULT),
         distanceTraveled: 0,
         maxFuelDistance: Math.max(100, cfg.missileFuelDistance ?? MISSILE_FUEL_DISTANCE),
         fuelBurnedOut: false,
@@ -1941,6 +1963,7 @@ function updateWeapons(state, player, input) {
         vx: player.vx,
         vy: player.vy,
         damage: cfg.bombDamage ?? cfg.secondaryDamage ?? 145,
+        airDamage: cfg.bombAirDamage ?? cfg.bombDamage ?? cfg.secondaryDamage ?? 145,
         distanceTraveled: 0,
         fuelBurnedOut: true, // ballistic under gravity
         lifeTicks: 240
@@ -2929,7 +2952,43 @@ function updateProjectiles(state) {
     pr.lifeTicks -= 1;
 
     if (pr.kind === "heli_missile" || pr.kind === "p47_missile") {
-      if (!pr.fuelBurnedOut) {
+      if (pr.missileStage === "drop") {
+        pr.vy -= GRAVITY * DT;
+        pr.x += pr.vx * DT;
+        pr.y += pr.vy * DT;
+        pr.dropTicksRemaining -= 1;
+        if (pr.dropTicksRemaining <= 0) {
+          const targetSpeed = pr.targetSpeed || AIRCRAFT_CONFIG.heli.missileSpeed;
+          const launchDir = pr.launchDir || 1;
+          const launchAngle = pr.launchAngle || 0;
+          pr.missileStage = "boost";
+          pr.boostTicksElapsed = 0;
+          pr.boostTotalTicks = pr.boostTotalTicks || HELI_MISSILE_BOOST_TICKS;
+          pr.boostStartSpeed = clamp(Math.abs(pr.vx), 200, targetSpeed * 0.45);
+          pr.vx = launchDir * pr.boostStartSpeed * Math.cos(launchAngle);
+          pr.vy = pr.boostStartSpeed * Math.sin(launchAngle);
+          state.events.push({ type: "missile_booster_ignited", id: pr.id, x: pr.x, y: pr.y, tick: state.tick });
+        }
+      } else if (pr.missileStage === "boost") {
+        const targetSpeed = pr.targetSpeed || AIRCRAFT_CONFIG.heli.missileSpeed;
+        const launchDir = pr.launchDir || 1;
+        const launchAngle = pr.launchAngle || 0;
+        const totalTicks = Math.max(1, pr.boostTotalTicks || HELI_MISSILE_BOOST_TICKS);
+        pr.boostTicksElapsed += 1;
+        const progress = Math.min(1, pr.boostTicksElapsed / totalTicks);
+        const curSpeed = pr.boostStartSpeed + (targetSpeed - pr.boostStartSpeed) * progress;
+        pr.vx = launchDir * curSpeed * Math.cos(launchAngle);
+        pr.vy = curSpeed * Math.sin(launchAngle);
+        const stepDist = Math.hypot(pr.vx * DT, pr.vy * DT);
+        pr.x += pr.vx * DT;
+        pr.y += pr.vy * DT;
+        pr.distanceTraveled += stepDist;
+        if (progress >= 1) {
+          pr.missileStage = "cruise";
+          pr.damage = pr.fullDamage ?? pr.damage;
+          pr.airDamage = pr.fullAirDamage ?? pr.airDamage;
+        }
+      } else if (!pr.fuelBurnedOut) {
         const stepDist = Math.hypot(pr.vx * DT, pr.vy * DT);
         pr.x += pr.vx * DT;
         pr.y += pr.vy * DT;
@@ -2986,12 +3045,18 @@ function updateProjectiles(state) {
       // bullet, tank_shell, howitzer_shell, flak_shell — strictly straight-line trajectory
       pr.x += pr.vx * DT;
       pr.y += pr.vy * DT;
+      pr.distanceTraveled = (pr.distanceTraveled || 0) + Math.hypot(pr.vx * DT, pr.vy * DT);
     }
 
     let hit = false;
     const skipSplash = new Set();
     const crossfiredAmbs = new Set();
     const isAntiAirProj = pr.kind === "flak_shell" || pr.kind === "sam_missile";
+    const isUnboostedHeliMissile =
+      pr.kind === "heli_missile" &&
+      (pr.missileStage === "drop" || pr.missileStage === "boost");
+    const impactScale = isUnboostedHeliMissile ? HELI_MISSILE_UNBOOSTED_DAMAGE_MULT : 1;
+    const airHitDamage = pr.airDamage ?? pr.damage;
     const isAircraftProj = Boolean(
       pr.fromAircraft ||
       pr.kind === "p47_bomb" ||
@@ -3004,6 +3069,7 @@ function updateProjectiles(state) {
       pr.kind === "bullet" ||
       pr.kind === "heli_missile" ||
       pr.kind === "p47_missile" ||
+      pr.kind === "p47_bomb" ||
       pr.kind === "tank_shell" ||
       pr.kind === "howitzer_shell" ||
       isAntiAirProj;
@@ -3015,9 +3081,16 @@ function updateProjectiles(state) {
         const dx = pr.x - other.x;
         const dy = pr.y - (other.y + 22);
         if (dx * dx + dy * dy <= 34 * 34) {
-          other.hp = Math.max(0, other.hp - pr.damage);
+          other.hp = Math.max(0, other.hp - airHitDamage);
           hit = true;
-          state.events.push({ type: "explosion", x: pr.x, y: pr.y, size: pr.kind === "bullet" ? 0.4 : 1.2, tick: state.tick });
+          state.events.push({
+            type: "explosion",
+            x: pr.x,
+            y: pr.y,
+            size: (pr.kind === "bullet" ? 0.4 : 1.2) * impactScale,
+            ...(isUnboostedHeliMissile ? { reducedImpact: true } : {}),
+            tick: state.tick
+          });
           if (other.hp <= 0) {
             killPlayerAircraft(state, other);
           }
@@ -3029,9 +3102,16 @@ function updateProjectiles(state) {
         for (const b52 of state.b52s) {
           if (!b52.alive || b52.hp <= 0 || b52.team === pr.team) continue;
           if (Math.abs(pr.x - b52.x) <= 95 && Math.abs(pr.y - b52.y) <= 42) {
-            b52.hp = Math.max(0, b52.hp - pr.damage);
+            b52.hp = Math.max(0, b52.hp - airHitDamage);
             hit = true;
-            state.events.push({ type: "explosion", x: pr.x, y: pr.y, size: pr.kind === "bullet" ? 0.45 : 1.3, tick: state.tick });
+            state.events.push({
+              type: "explosion",
+              x: pr.x,
+              y: pr.y,
+              size: (pr.kind === "bullet" ? 0.45 : 1.3) * impactScale,
+              ...(isUnboostedHeliMissile ? { reducedImpact: true } : {}),
+              tick: state.tick
+            });
             break;
           }
         }
@@ -3043,7 +3123,14 @@ function updateProjectiles(state) {
           if (Math.abs(pr.x - v2.x) <= 32 && Math.abs(pr.y - v2.y) <= 24) {
             v2.hp = Math.max(0, v2.hp - pr.damage);
             hit = true;
-            state.events.push({ type: "explosion", x: pr.x, y: pr.y, size: 1.0, tick: state.tick });
+            state.events.push({
+              type: "explosion",
+              x: pr.x,
+              y: pr.y,
+              size: 1.0 * impactScale,
+              ...(isUnboostedHeliMissile ? { reducedImpact: true } : {}),
+              tick: state.tick
+            });
             break;
           }
         }
@@ -3071,8 +3158,9 @@ function updateProjectiles(state) {
             type: "explosion",
             x: pr.x,
             y: Math.max(12, pr.y),
-            size: pr.kind === "bullet" ? 0.35 : 1.3,
+            size: (pr.kind === "bullet" ? 0.35 : 1.3) * impactScale,
             rearHit,
+            ...(isUnboostedHeliMissile ? { reducedImpact: true } : {}),
             tick: state.tick
           });
           break;
@@ -3098,8 +3186,9 @@ function updateProjectiles(state) {
               type: "explosion",
               x: pr.x,
               y: Math.max(12, pr.y),
-              size: pr.kind === "bullet" ? 0.35 : 1.25,
+              size: (pr.kind === "bullet" ? 0.35 : 1.25) * impactScale,
               rearHit,
+              ...(isUnboostedHeliMissile ? { reducedImpact: true } : {}),
               tick: state.tick
             });
             break;
@@ -3117,7 +3206,14 @@ function updateProjectiles(state) {
             skipSplash.add(p.id);
             if (p.hp <= 0) state.paratroopers.splice(pi, 1);
             hit = true;
-            state.events.push({ type: "explosion", x: pr.x, y: Math.max(10, pr.y), size: 0.45, tick: state.tick });
+            state.events.push({
+              type: "explosion",
+              x: pr.x,
+              y: Math.max(10, pr.y),
+              size: 0.45 * impactScale,
+              ...(isUnboostedHeliMissile ? { reducedImpact: true } : {}),
+              tick: state.tick
+            });
             break;
           }
         }
@@ -3131,7 +3227,14 @@ function updateProjectiles(state) {
             applyCrossfireToAmbulances(state, b.x, 62, pr.damage, b.id, crossfiredAmbs, pr.team);
             skipSplash.add(b.id);
             hit = true;
-            state.events.push({ type: "explosion", x: pr.x, y: Math.max(16, pr.y), size: pr.kind === "bullet" ? 0.35 : 1.2, tick: state.tick });
+            state.events.push({
+              type: "explosion",
+              x: pr.x,
+              y: Math.max(16, pr.y),
+              size: (pr.kind === "bullet" ? 0.35 : 1.2) * impactScale,
+              ...(isUnboostedHeliMissile ? { reducedImpact: true } : {}),
+              tick: state.tick
+            });
             break;
           }
         }
@@ -3145,7 +3248,14 @@ function updateProjectiles(state) {
           applyCrossfireToAmbulances(state, hq.x, 95, pr.damage, `hq_${enemyTeam}`, crossfiredAmbs, pr.team);
           skipSplash.add(`hq_${enemyTeam}`);
           hit = true;
-          state.events.push({ type: "explosion", x: pr.x, y: Math.max(20, pr.y), size: pr.kind === "bullet" ? 0.4 : 1.5, tick: state.tick });
+          state.events.push({
+            type: "explosion",
+            x: pr.x,
+            y: Math.max(20, pr.y),
+            size: (pr.kind === "bullet" ? 0.4 : 1.5) * impactScale,
+            ...(isUnboostedHeliMissile ? { reducedImpact: true } : {}),
+            tick: state.tick
+          });
         }
       }
 
@@ -3164,7 +3274,8 @@ function updateProjectiles(state) {
               type: "explosion",
               x: pr.x,
               y: Math.max(12, pr.y),
-              size: pr.kind === "bullet" ? 0.35 : 1.1,
+              size: (pr.kind === "bullet" ? 0.35 : 1.1) * impactScale,
+              ...(isUnboostedHeliMissile ? { reducedImpact: true } : {}),
               tick: state.tick
             });
             break;
@@ -3179,7 +3290,14 @@ function updateProjectiles(state) {
             skipSplash.add(c.id);
             killCivilian(state, ci, pr.team);
             hit = true;
-            state.events.push({ type: "explosion", x: pr.x, y: 12, size: 0.6, tick: state.tick });
+            state.events.push({
+              type: "explosion",
+              x: pr.x,
+              y: 12,
+              size: 0.6 * impactScale,
+              ...(isUnboostedHeliMissile ? { reducedImpact: true } : {}),
+              tick: state.tick
+            });
             break;
           }
         }
@@ -3192,7 +3310,8 @@ function updateProjectiles(state) {
         type: "explosion",
         x: pr.x,
         y: 6,
-        size: pr.kind === "bullet" || pr.kind === "flak_shell" ? 0.25 : 1.0,
+        size: (pr.kind === "bullet" || pr.kind === "flak_shell" ? 0.25 : 1.0) * impactScale,
+        ...(isUnboostedHeliMissile ? { reducedImpact: true } : {}),
         tick: state.tick
       });
     }
@@ -3213,7 +3332,8 @@ function updateProjectiles(state) {
     }
 
     const { minX, maxX } = getWorldBounds(state);
-    if (hit || pr.lifeTicks <= 0 || pr.x < minX - 300 || pr.x > maxX + 300 || pr.y > CEILING_Y + 400) {
+    const outOfRange = pr.maxRange > 0 && (pr.distanceTraveled || 0) >= pr.maxRange;
+    if (hit || outOfRange || pr.lifeTicks <= 0 || pr.x < minX - 300 || pr.x > maxX + 300 || pr.y > CEILING_Y + 400) {
       if (pr.isPlayerSecondary && !pr.scoredGroundUnitHit) {
         const owner = state.players[pr.ownerId];
         if (owner && owner.raidId === pr.raidId) {
@@ -3673,7 +3793,7 @@ function selectAirTarget(state, bot, ai, frontlineX, forwardDir, enemyHqX) {
       : HELI_BOT_CONFIG.airVisualRange;
     const normalEligible = dist <= maxVis && behindEnemyFront <= HELI_BOT_CONFIG.airMaxBehindFront;
 
-    const maxPursuitGap = (ep.aircraftType === "p47" && (ep.vx || 0) * forwardDir > 290)
+    const maxPursuitGap = (ep.aircraftType === "p47" && (ep.vx || 0) * forwardDir > AIRCRAFT_CONFIG.heli.maxSpeedX + 10)
       ? HELI_BOT_CONFIG.airPursuitMaxGapFastP47
       : HELI_BOT_CONFIG.airPursuitMaxGap;
     const pursuitEligible = hpRatio <= HELI_BOT_CONFIG.airPursuitHpRatio
@@ -3922,44 +4042,85 @@ function isRayClearOfFriendliesAndCivilians(state, bot, muzzleX, muzzleY, vx, vy
 
 function evaluateWeaponShot(bot, target, isMissile) {
   const cfg = AIRCRAFT_CONFIG.heli;
-  const muzzleX = bot.x + bot.dir * (isMissile ? 34 : 38);
-  const muzzleY = bot.y + (isMissile ? 12 : 8);
-  const speed = isMissile ? cfg.missileSpeed : cfg.primarySpeed;
-  const angle = bot.pitch + (isMissile ? 0 : (cfg.primaryAngleDeg * Math.PI) / 180);
-  const vx = bot.dir * speed * Math.cos(angle) + (isMissile ? 0 : (bot.vx || 0) * 0.25);
-  const vy = speed * Math.sin(angle);
+  const forwardCarry = Math.max(0, (bot.vx || 0) * bot.dir);
+
+  if (isMissile) {
+    const dropT = HELI_MISSILE_DROP_TICKS * DT;
+    const boostT = HELI_MISSILE_BOOST_TICKS * DT;
+    const dropVx = bot.dir * (forwardCarry * 0.85 + 45);
+    const dropVy = Math.min(0, (bot.vy || 0) * 0.35) - 85;
+    const igniteX = bot.x + bot.dir * 26 + dropVx * dropT;
+    const igniteY = bot.y + 8 + dropVy * dropT - 0.5 * GRAVITY * dropT * dropT;
+    if (igniteY <= 6) return null;
+
+    const angle = bot.pitch;
+    const boostStartSpeed = clamp(Math.abs(dropVx), 200, cfg.missileSpeed * 0.45);
+    const boostDeficit = 0.5 * (cfg.missileSpeed - boostStartSpeed) * boostT;
+    const vx = bot.dir * cfg.missileSpeed * Math.cos(angle);
+    const vy = cfg.missileSpeed * Math.sin(angle);
+
+    if (target.isAir) {
+      if ((target.x - igniteX) * bot.dir <= 25) return null;
+      const relVx = vx - (target.vx || 0);
+      if ((target.x - igniteX) * relVx <= 0) return null;
+      const effectiveX0 = igniteX - bot.dir * Math.cos(angle) * boostDeficit;
+      const targetXAtIgnite = target.x + (target.vx || 0) * dropT;
+      const tAfterIgnite = (targetXAtIgnite - effectiveX0) / relVx;
+      const tTotal = dropT + tAfterIgnite;
+      if (tAfterIgnite <= 0 || tTotal > 1.25) return null;
+      const targetXAtHit = target.x + (target.vx || 0) * tTotal;
+      const projY = igniteY + ((targetXAtHit - igniteX) * bot.dir) * Math.tan(angle);
+      const targetY = target.centerY + (target.vy || 0) * tTotal;
+      const tol = HELI_BOT_CONFIG.airSecondaryAimTolerance ?? (target.hitHalfH + 26);
+      if (Math.abs(projY - targetY) > tol) return null;
+      return { t: tAfterIgnite, muzzleX: igniteX, muzzleY: igniteY, vx, vy };
+    }
+
+    const boostDistX = Math.cos(angle) * 0.5 * (boostStartSpeed + cfg.missileSpeed) * boostT;
+    const minGroundDx = Math.max(35, boostDistX);
+    const dx = target.x - igniteX;
+    if (dx * bot.dir <= minGroundDx || Math.abs(dx) > 780) return null;
+    if (Math.abs(vx) < 1e-3) return null;
+    const tAfterIgnite = (dx + bot.dir * Math.cos(angle) * boostDeficit) / vx;
+    const tTotal = dropT + tAfterIgnite;
+    if (tAfterIgnite <= 0 || tTotal > 1.4) return null;
+    const projY = igniteY + (dx * bot.dir) * Math.tan(angle);
+    const minHitY = target.minHitY ?? 0;
+    if (projY < minHitY || projY > target.hitH + 2) return null;
+    return { t: tAfterIgnite, muzzleX: igniteX, muzzleY: igniteY, vx, vy };
+  }
+
+  const muzzleX = bot.x + bot.dir * 38;
+  const muzzleY = bot.y + 8;
+  const angle = bot.pitch + (cfg.primaryAngleDeg * Math.PI) / 180;
+  const muzzleSpeed = cfg.primarySpeed + forwardCarry;
+  const vx = bot.dir * muzzleSpeed * Math.cos(angle);
+  const vy = muzzleSpeed * Math.sin(angle);
 
   if (target.isAir) {
     if ((target.x - muzzleX) * bot.dir <= 25) return null;
     const relVx = vx - (target.vx || 0);
     if ((target.x - muzzleX) * relVx <= 0) return null;
     const t = (target.x - muzzleX) / relVx;
-    const maxFlightT = isMissile ? 1.05 : 1.15;
-    if (t <= 0 || t > maxFlightT) return null;
+    if (t <= 0 || t > 1.15) return null;
     const projY = muzzleY + vy * t;
     const targetY = target.centerY + (target.vy || 0) * t;
-    const tol = isMissile
-      ? (HELI_BOT_CONFIG.airSecondaryAimTolerance ?? (target.hitHalfH + 26))
-      : (HELI_BOT_CONFIG.airPrimaryAimTolerance ?? (target.hitHalfH + 62));
+    const tol = HELI_BOT_CONFIG.airPrimaryAimTolerance ?? (target.hitHalfH + 62);
     const rayAligned = Math.abs(projY - targetY) <= tol;
-    const bandAligned = !isMissile
-      && Math.abs(target.x - muzzleX) <= 520
+    const bandAligned = Math.abs(target.x - muzzleX) <= 520
       && Math.abs(muzzleY - targetY) <= tol * 0.85;
     if (!rayAligned && !bandAligned) return null;
     return { t, muzzleX, muzzleY, vx, vy };
   }
 
-  const maxRange = isMissile ? 780 : 650;
   const dx = target.x - muzzleX;
-  if (dx * bot.dir <= 35 || Math.abs(dx) > maxRange) return null;
+  if (dx * bot.dir <= 35 || Math.abs(dx) > 650) return null;
   if (Math.abs(vx) < 1e-3) return null;
   const t = dx / vx;
   if (t <= 0 || t > 1.2) return null;
   const projY = muzzleY + vy * t;
   const minHitY = target.minHitY ?? 0;
-  const minBound = isMissile ? minHitY : minHitY - 4;
-  const maxBound = target.hitH + (isMissile ? 2 : 6);
-  if (projY < minBound || projY > maxBound) return null;
+  if (projY < minHitY - 4 || projY > target.hitH + 6) return null;
   return { t, muzzleX, muzzleY, vx, vy };
 }
 
@@ -4099,11 +4260,14 @@ function tryFireHeliWeapons(state, bot, inp, focusTarget) {
   if ((ai.airPrimaryBurstTicks || 0) > 0) {
     ai.airPrimaryBurstTicks -= 1;
     if (!inp.firePrimary) {
+      const cfg = AIRCRAFT_CONFIG.heli;
       const muzzleX = bot.x + bot.dir * 38;
       const muzzleY = bot.y + 8;
-      const speed = AIRCRAFT_CONFIG.heli.primarySpeed;
-      const vx = bot.dir * speed * Math.cos(bot.pitch) + (bot.vx || 0) * 0.25;
-      const vy = speed * Math.sin(bot.pitch);
+      const angle = bot.pitch + (cfg.primaryAngleDeg * Math.PI) / 180;
+      const forwardCarry = Math.max(0, (bot.vx || 0) * bot.dir);
+      const muzzleSpeed = cfg.primarySpeed + forwardCarry;
+      const vx = bot.dir * muzzleSpeed * Math.cos(angle);
+      const vy = muzzleSpeed * Math.sin(angle);
       const keepSpraying = candidates.some((c) => {
         if (!c.isAir) return false;
         const dx = (c.x - muzzleX) * bot.dir;
@@ -5010,7 +5174,7 @@ function flyP47ToBaseAndLand(state, bot, ai, inp, homeX, forwardDir) {
   const padMaxX = BASES[bot.team].padMaxX;
   const entryX = homeX + forwardDir * 240;
 
-  if (bot.y <= 1.5 && isOnFriendlyPad(bot)) {
+  if (bot.y <= 0.05 && isOnFriendlyPad(bot)) {
     if (bot.speed > 20) {
       inp[bot.dir === 1 ? "left" : "right"] = true;
       inp.down = true;
@@ -5045,9 +5209,10 @@ function flyP47ToBaseAndLand(state, bot, ai, inp, homeX, forwardDir) {
   }
 
   // Manage airspeed cleanly in Stage 1/2 (never stall, never trigger accidental U-turn)
-  if (bot.speed > 275) {
+  const minGlide = AIRCRAFT_CONFIG.p47.minGlideSpeed;
+  if (bot.speed > minGlide + 45) {
     inp[bot.dir === 1 ? "left" : "right"] = true;
-  } else if (bot.throttleOffTime > 0.55 || bot.speed < 250) {
+  } else if (bot.throttleOffTime > 0.55 || bot.speed < minGlide + 20) {
     inp[bot.dir === 1 ? "right" : "left"] = true;
   }
 
@@ -5289,8 +5454,10 @@ function tryFireP47Weapons(state, bot, inp, focusAir, focusGround) {
   const angle = bot.effectivePitch ?? bot.pitch ?? 0;
   const muzzleX = bot.x + bot.dir * 38;
   const muzzleY = bot.y + 18;
-  const pVx = bot.dir * cfg.primarySpeed * Math.cos(angle) + (bot.vx || 0) * 0.25;
-  const pVy = cfg.primarySpeed * Math.sin(angle);
+  const forwardCarry = Math.max(0, bot.speed || Math.abs(bot.vx || 0));
+  const muzzleSpeed = cfg.primarySpeed + forwardCarry;
+  const pVx = bot.dir * muzzleSpeed * Math.cos(angle);
+  const pVy = muzzleSpeed * Math.sin(angle);
 
   // 1. Air-to-air wing cannon candidates (never drop bombs on air targets)
   const airCandidates = [];

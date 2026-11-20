@@ -1,4 +1,5 @@
 import {
+  AIRCRAFT_CONFIG,
   BASES,
   MAX_X,
   MIN_X,
@@ -143,7 +144,7 @@ export class SpriteBattlefieldRenderer {
     const lookAheadX = focusPlayer.vx * 0.42 + focusPlayer.dir * 130;
     const targetX = Math.max(MIN_X + 380, Math.min(MAX_X - 380, focusPlayer.x + lookAheadX));
     const targetY = Math.max(150, Math.min(760, focusPlayer.y + 90));
-    const speedNorm = Math.min(1, Math.abs(focusPlayer.vx) / 520);
+    const speedNorm = Math.min(1, Math.abs(focusPlayer.vx) / Math.max(1, AIRCRAFT_CONFIG.p47.maxSpeed));
     const targetZoom = focusPlayer.aircraftType === "p47" ? 0.92 - speedNorm * 0.14 : 1.05 - speedNorm * 0.10;
 
     const lerp = Math.min(1, dt * 6);
@@ -671,7 +672,9 @@ export class SpriteBattlefieldRenderer {
         ctx.lineTo(tx, ty);
         ctx.stroke();
       } else if (pr.kind === "heli_missile" || pr.kind === "p47_missile" || pr.kind === "sam_missile") {
-        if (!pr.fuelBurnedOut) {
+        const isDropping = pr.kind === "heli_missile" && pr.missileStage === "drop";
+        const isBoosting = pr.kind === "heli_missile" && pr.missileStage === "boost";
+        if (!pr.fuelBurnedOut && !isDropping) {
           const samColor = pr.samProfile === "fast"
             ? "#bae6fd"
             : pr.samProfile === "slow"
@@ -680,14 +683,16 @@ export class SpriteBattlefieldRenderer {
           this.smokeTrail.push({
             x: pr.x,
             y: pr.y,
-            r: pr.kind === "sam_missile" ? 3.8 : 4.5,
-            life: 0.35,
-            maxLife: 0.35,
-            color: pr.kind === "sam_missile" ? samColor : "#e2e8f0"
+            r: pr.kind === "sam_missile" ? 3.8 : isBoosting ? 5.5 : 4.5,
+            life: isBoosting ? 0.42 : 0.35,
+            maxLife: isBoosting ? 0.42 : 0.35,
+            color: pr.kind === "sam_missile" ? samColor : isBoosting ? "#fed7aa" : "#e2e8f0"
           });
         }
         const img = this.sprites.get("v2_missile");
-        const ang = Math.atan2(-pr.vy, pr.vx);
+        const ang = isDropping
+          ? Math.atan2(-Math.sin(pr.launchAngle || 0), (pr.launchDir || 1) * Math.cos(pr.launchAngle || 0))
+          : Math.atan2(-pr.vy, pr.vx);
         if (img) {
           ctx.save();
           ctx.translate(sx, sy);

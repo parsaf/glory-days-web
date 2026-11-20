@@ -3,6 +3,7 @@ import test from "node:test";
 import { SpriteBattlefieldRenderer } from "../public/js/renderer.mjs";
 import {
   AIRCRAFT_CONFIG,
+  AIRCRAFT_ORDNANCE_DAMAGE,
   AUTO_PRODUCTION_COLUMN_PAUSE_TICKS,
   AUTO_PRODUCTION_COLUMN_SIZE,
   AUTO_PRODUCTION_COOLDOWN_TICKS,
@@ -18,10 +19,14 @@ import {
   DEFAULT_BUNKER_CONFIG,
   DEFAULT_GROUND_BEHAVIOR_CONFIG,
   DEFAULT_HELI_CONFIG,
+  DEFAULT_P47_CONFIG,
   DEFAULT_UNIT_CONFIG,
   DEFENSE_CONFIG,
   GRAVITY,
   GROUND_BEHAVIOR_CONFIG,
+  HELI_MISSILE_BOOST_TICKS,
+  HELI_MISSILE_DROP_TICKS,
+  HELI_MISSILE_UNBOOSTED_DAMAGE_MULT,
   HELI_TUNING_SCHEMA,
   MISSILE_FUEL_DISTANCE,
   SLOW_FIRE_INTERVAL,
@@ -65,7 +70,7 @@ import {
   updateP47Config
 } from "../shared/simulation.mjs";
 
-test("Primary gun (A) burst reservoir fires 12/s for 90 ticks, drops to 1/0.5s, and recharges after 120 idle ticks", () => {
+test("Primary gun (A) burst reservoir fires 12/s for 80 ticks, drops to 1/0.5s, and recharges after 120 idle ticks", () => {
   const state = createInitialState({ includePracticeTargets: false });
   const player = addPlayer(state, "p1", "allied", "heli");
   player.y = 200; // airborne
@@ -100,7 +105,7 @@ test("Primary gun (A) burst reservoir fires 12/s for 90 ticks, drops to 1/0.5s, 
   assert.equal(player.burstReservoir, BURST_MAX_TICKS);
 });
 
-test("Helicopter straight-trajectory missile flies straight for 4000m (1/3 map) before burning out and falling", () => {
+test("Helicopter missile drops under heli, boosts rapidly to straight trajectory for 4000m (1/3 map), then burns out and falls", () => {
   const state = createInitialState({ includePracticeTargets: false });
   const player = addPlayer(state, "p1", "allied", "heli");
   player.x = -5000;
@@ -113,11 +118,33 @@ test("Helicopter straight-trajectory missile flies straight for 4000m (1/3 map) 
   assert.ok(missile, "Helicopter missile spawned");
   assert.equal(missile.fuelBurnedOut, false);
   assert.equal(missile.maxFuelDistance, MISSILE_FUEL_DISTANCE);
+  assert.equal(missile.missileStage, "drop", "Missile starts in slight drop phase under heli");
+  assert.equal(missile.damage, Math.round(AIRCRAFT_CONFIG.heli.missileDamage * HELI_MISSILE_UNBOOSTED_DAMAGE_MULT));
+
+  const yAtSpawn = missile.y;
+  let sawBoostEvent = false;
+  for (let t = 0; t < HELI_MISSILE_DROP_TICKS; t++) {
+    stepSimulation(state, { p1: {} });
+    if (state.events.some((e) => e.type === "missile_booster_ignited" && e.id === missile.id)) {
+      sawBoostEvent = true;
+    }
+  }
+  assert.ok(missile.y < yAtSpawn - 10, "Missile drops noticeably beneath helicopter before booster ignites");
+  assert.equal(sawBoostEvent, true, "Missile booster ignites shortly after drop");
+  assert.equal(missile.missileStage, "boost");
+
+  for (let t = 0; t < HELI_MISSILE_BOOST_TICKS; t++) {
+    stepSimulation(state, { p1: {} });
+  }
+  assert.equal(missile.missileStage, "cruise", "Booster rapidly accelerates missile to cruise");
+  assert.equal(missile.damage, AIRCRAFT_CONFIG.heli.missileDamage, "Full damage restored once at cruise speed");
+  assert.equal(missile.airDamage, AIRCRAFT_CONFIG.heli.missileAirDamage, "Full air damage restored once at cruise speed");
 
   const startX = missile.x;
   const startY = missile.y;
   const initVx = missile.vx;
   const initVy = missile.vy;
+  assert.equal(Math.round(Math.hypot(initVx, initVy)), AIRCRAFT_CONFIG.heli.missileSpeed);
   let burnoutTick = -1;
   for (let t = 0; t < 400; t++) {
     stepSimulation(state, { p1: {} });
@@ -391,7 +418,8 @@ test("P-47 speed reaches maxSpeed on throttle, drops to cruiseSpeed off-throttle
     assert.equal(player.stallVy, 0, "Throttling clears passive stall descent immediately");
     assert.ok(player.vy > -75, "Throttling breaks Stage 4 fast descent immediately");
     for (let t = 0; t < 45; t++) stepSimulation(state, { p1: { right: true } });
-    assert.ok(player.vy >= -36, "Throttling stabilizes back into level sine-wave cruise");
+    const maxCruiseWaveVy = player.speed * Math.sin(cfg.sinePitchAmp) + cfg.sineAmpVel + 6;
+    assert.ok(player.vy >= -maxCruiseWaveVy, "Throttling stabilizes back into level sine-wave cruise");
   }
 });
 
@@ -525,7 +553,8 @@ test("Dev P-47 config tuning, 4-stage timers (throttleReleaseDelay, stallGlideDe
     const resetCfg = updateP47Config({ reset: true });
     assert.equal(resetCfg.throttleReleaseDelay, 1.10);
     assert.equal(resetCfg.stallGlideDelay, 1.40);
-    assert.equal(resetCfg.cruiseSpeed, 380);
+    assert.equal(resetCfg.cruiseSpeed, DEFAULT_P47_CONFIG.cruiseSpeed);
+    assert.equal(resetCfg.maxSpeed, DEFAULT_P47_CONFIG.maxSpeed);
   }
 });
 
@@ -929,14 +958,14 @@ test("Phase 2: Special Weapons [Z] B-52 Carpet Raid drops 24 bombs & [X] V2 Miss
   v2Victim.y = 400;
   v2Victim.pitch = 0;
   const defender = addPlayer(v2State, "e1", "enemy", "heli");
-  defender.x = 240;
-  defender.y = 388;
+  defender.x = 420;
+  defender.y = 417;
   defender.dir = -1;
   defender.vx = 0;
   defender.pitch = 0;
   stepSimulation(v2State, { e1: { fireSecondary: true } });
   let intercepted = false;
-  for (let t = 0; t < 35; t++) {
+  for (let t = 0; t < 45; t++) {
     stepSimulation(v2State, {});
     if (v2State.events.some((e) => e.type === "v2_intercepted")) intercepted = true;
   }
@@ -1413,13 +1442,14 @@ test("Ambulances pass obstacles without AI targeting, take friendly/enemy fire a
 
   // Finish off with a friendly heli missile -> friendly fire destroys own ambulance and incurs passenger-scaled penalty
   const alliedHeli = addPlayer(ffState, "p1", "allied", "heli");
-  alliedHeli.x = -120;
-  alliedHeli.y = 12;
+  alliedHeli.x = -260;
+  alliedHeli.y = 45;
   alliedHeli.dir = 1;
   alliedHeli.vx = 0;
   stepSimulation(ffState, { p1: { fireSecondary: true } });
-  for (let t = 0; t < 20; t++) {
+  for (let t = 0; t < 35; t++) {
     if (friendlyAmb.hp > 0) friendlyAmb.x = 0;
+    alliedHeli.y = 45;
     stepSimulation(ffState, { p1: {}, e1: {} });
   }
   assert.equal(friendlyAmb.hp, 0, "Friendly aircraft weapon directly destroys friendly ambulance");
@@ -1435,14 +1465,15 @@ test("Ambulances pass obstacles without AI targeting, take friendly/enemy fire a
   const targetAmb = spawnGroundUnit(emptyState, "allied", "5", 0);
   targetAmb.hp = 30;
   const enemyBomber = addPlayer(emptyState, "e1", "enemy", "heli");
-  enemyBomber.x = 120;
-  enemyBomber.y = 12;
+  enemyBomber.x = 260;
+  enemyBomber.y = 45;
   enemyBomber.dir = -1;
   enemyBomber.vx = 0;
   stepSimulation(emptyState, { e1: { fireSecondary: true } });
   let penaltyEv = null;
-  for (let t = 0; t < 20; t++) {
+  for (let t = 0; t < 35; t++) {
     if (targetAmb.hp > 0) targetAmb.x = 0;
+    enemyBomber.y = 45;
     stepSimulation(emptyState, { e1: {} });
     penaltyEv = penaltyEv || emptyState.events.find((e) => e.type === "civilian_killed" && e.cause === "ambulance_destroyed");
   }
@@ -1920,12 +1951,15 @@ test("Friendly aircraft damage their own ground units, paratroopers, and bunkers
   const alliedTank = spawnGroundUnit(state, "allied", "3", 150);
   const tankStartHp = alliedTank.hp;
 
-  shooter.x = 20;
-  shooter.y = 14;
+  shooter.x = -120;
+  shooter.y = 45;
   shooter.dir = 1;
   shooter.vx = 0;
   stepSimulation(state, { p1: { firePrimary: true, fireSecondary: true } });
-  for (let t = 0; t < 25; t++) stepSimulation(state, { p1: {} });
+  for (let t = 0; t < 40; t++) {
+    shooter.y = 45;
+    stepSimulation(state, { p1: {} });
+  }
   assert.ok(alliedTank.hp <= tankStartHp - AIRCRAFT_CONFIG.heli.missileDamage, "Friendly heli cannon & missile damage own ground tank");
 
   // Friendly airborne heli bullet hits friendly paratrooper
@@ -3332,4 +3366,441 @@ test("Chopper Flight Lab tuned weapons, boarding/rescue envelopes, paratroopers,
   } finally {
     updateHeliConfig({ reset: true });
   }
+});
+
+test("Aircraft balance: Helicopter is tankier and faster than before while Plane maintains clear speed superiority", () => {
+  assert.ok(AIRCRAFT_CONFIG.heli.maxHp > AIRCRAFT_CONFIG.p47.maxHp, "Helicopter has more HP than Plane");
+  assert.equal(AIRCRAFT_CONFIG.heli.maxHp, 300);
+  assert.equal(AIRCRAFT_CONFIG.p47.maxHp, 200);
+
+  assert.ok(AIRCRAFT_CONFIG.heli.maxSpeedX > 280, "Helicopter is faster than original 280 px/s");
+  assert.ok(AIRCRAFT_CONFIG.p47.cruiseSpeed > AIRCRAFT_CONFIG.heli.maxSpeedX, "Plane cruise speed exceeds Helicopter top horizontal speed");
+  assert.ok(AIRCRAFT_CONFIG.p47.maxSpeed > AIRCRAFT_CONFIG.p47.cruiseSpeed, "Plane top speed exceeds cruise speed");
+
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const heli = addPlayer(state, "h1", "allied", "heli");
+  heli.x = -3000;
+  heli.y = 260;
+  const p47 = addPlayer(state, "p1", "allied", "p47");
+  p47.x = -3000;
+  p47.y = 320;
+  p47.speed = AIRCRAFT_CONFIG.p47.cruiseSpeed;
+  p47.vx = AIRCRAFT_CONFIG.p47.cruiseSpeed;
+
+  for (let t = 0; t < 180; t++) {
+    stepSimulation(state, { h1: { right: true, up: true }, p1: { right: true } });
+    if (heli.y > 260) heli.vy = 0;
+  }
+  assert.ok(heli.vx > 370, "Helicopter accelerates near its faster maxSpeedX");
+  assert.ok(p47.vx > heli.vx * 1.8, "Plane maintains strong relative speed superiority over faster Helicopter");
+  assert.ok(p47.x > heli.x, "Plane pulls decisively ahead of Helicopter");
+});
+
+test("SAM, full-speed Heli Missile, and P-47 Dive Bomb deal equal 100 air damage (2 kills Plane, 3 kills Heli)", () => {
+  assert.equal(UNIT_CONFIG.aa_truck.samDamage, AIRCRAFT_ORDNANCE_DAMAGE);
+  assert.equal(DEFENSE_CONFIG.baseAa.samDamage, AIRCRAFT_ORDNANCE_DAMAGE);
+  assert.equal(AIRCRAFT_CONFIG.heli.missileAirDamage, AIRCRAFT_ORDNANCE_DAMAGE);
+  assert.equal(AIRCRAFT_CONFIG.p47.bombAirDamage, AIRCRAFT_ORDNANCE_DAMAGE);
+
+  // 1. 2 direct SAM hits kill P-47 (1 leaves alive at 100 HP)
+  const samPlaneState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const targetP47 = addPlayer(samPlaneState, "p1", "allied", "p47");
+  const aaPlane = spawnGroundUnit(samPlaneState, "enemy", "2", 350);
+  aaPlane.holdPosition = true;
+
+  for (let hitNum = 1; hitNum <= 2; hitNum++) {
+    targetP47.x = 0;
+    targetP47.y = 240;
+    targetP47.speed = AIRCRAFT_CONFIG.p47.cruiseSpeed;
+    targetP47.vx = AIRCRAFT_CONFIG.p47.cruiseSpeed;
+    targetP47.vy = 0;
+    targetP47.pitch = 0;
+    aaPlane.samCooldown = 0;
+    const hpBefore = targetP47.hp;
+    for (let t = 0; t < 45; t++) {
+      stepSimulation(samPlaneState, { p1: { right: true } });
+      if (targetP47.hp < hpBefore || !targetP47.alive) break;
+    }
+    if (hitNum === 1) {
+      assert.equal(targetP47.alive, true, "1 direct SAM hit leaves P-47 alive");
+      assert.equal(targetP47.hp, 100, "1 direct SAM hit deals 100 damage to P-47");
+    } else {
+      assert.equal(targetP47.alive, false, "2 direct SAM hits kill P-47");
+      assert.equal(targetP47.hp, 0);
+    }
+  }
+
+  // 2. 3 direct SAM hits kill Helicopter (2 leave alive at 100 HP)
+  const samHeliState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const targetHeli = addPlayer(samHeliState, "h1", "allied", "heli");
+  const aaHeli = spawnGroundUnit(samHeliState, "enemy", "2", 180);
+  aaHeli.holdPosition = true;
+
+  for (let hitNum = 1; hitNum <= 3; hitNum++) {
+    targetHeli.x = 0;
+    targetHeli.y = 220;
+    targetHeli.vx = 0;
+    targetHeli.vy = 0;
+    aaHeli.samCooldown = 0;
+    const hpBefore = targetHeli.hp;
+    for (let t = 0; t < 60; t++) {
+      targetHeli.x = 0;
+      targetHeli.y = 220;
+      targetHeli.vx = 0;
+      targetHeli.vy = 0;
+      stepSimulation(samHeliState, { h1: {} });
+      if (targetHeli.hp < hpBefore || !targetHeli.alive) break;
+    }
+    if (hitNum < 3) {
+      assert.equal(targetHeli.alive, true, `Heli survives ${hitNum} direct SAM hit(s)`);
+      assert.equal(targetHeli.hp, 300 - hitNum * 100);
+    } else {
+      assert.equal(targetHeli.alive, false, "3 direct SAM hits kill Helicopter");
+      assert.equal(targetHeli.hp, 0);
+    }
+  }
+
+  // 3. Full-speed Heli Missile deals 100 air damage to enemy aircraft (2 kill P-47, 3 kill Heli)
+  const heliAirState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const shooterHeli = addPlayer(heliAirState, "h1", "allied", "heli");
+  const enemyHeli = addPlayer(heliAirState, "e1", "enemy", "heli");
+  for (let shot = 1; shot <= 3; shot++) {
+    shooterHeli.x = -500;
+    shooterHeli.y = 260;
+    shooterHeli.dir = 1;
+    shooterHeli.vx = 0;
+    shooterHeli.pitch = 0;
+    shooterHeli.secondaryCooldown = 0;
+    enemyHeli.x = 200;
+    enemyHeli.y = 212;
+    enemyHeli.vx = 0;
+    enemyHeli.vy = 0;
+    stepSimulation(heliAirState, { h1: { fireSecondary: true } });
+    const hpBefore = enemyHeli.hp;
+    for (let t = 0; t < 60; t++) {
+      shooterHeli.y = 260;
+      enemyHeli.x = 200;
+      enemyHeli.y = 212;
+      stepSimulation(heliAirState, { h1: {}, e1: {} });
+      if (enemyHeli.hp < hpBefore || !enemyHeli.alive) break;
+    }
+    assert.equal(hpBefore - enemyHeli.hp, AIRCRAFT_ORDNANCE_DAMAGE, `Full-speed heli missile shot #${shot} deals exact 100 air damage`);
+  }
+  assert.equal(enemyHeli.alive, false, "3 full-speed heli missiles kill enemy Helicopter");
+
+  // 4. P-47 Dive Bomb deals exact 100 air damage to enemy aircraft & ignores friendly aircraft
+  const bombAirState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const bomber = addPlayer(bombAirState, "p1", "allied", "p47");
+  const friendlyWing = addPlayer(bombAirState, "p2", "allied", "heli");
+  const enemyTargetHeli = addPlayer(bombAirState, "e1", "enemy", "heli");
+  const enemyTargetP47 = addPlayer(bombAirState, "e2", "enemy", "p47");
+
+  bomber.x = -1000;
+  bomber.y = 400;
+  bomber.vx = 510;
+  bomber.speed = 510;
+  bomber.vy = 0;
+  stepSimulation(bombAirState, { p1: { right: true, fireSecondary: true } });
+  const bomb = bombAirState.projectiles.find((p) => p.kind === "p47_bomb");
+  assert.ok(bomb);
+
+  // Place friendly wingman directly in bomb path -> passes harmlessly through
+  for (let t = 0; t < 8; t++) stepSimulation(bombAirState, { p1: { right: true } });
+  friendlyWing.x = bomb.x;
+  friendlyWing.y = bomb.y - 22;
+  friendlyWing.vx = 0;
+  stepSimulation(bombAirState, { p1: { right: true } });
+  assert.equal(friendlyWing.hp, friendlyWing.maxHp, "Friendly P-47 dive bomb passes through friendly aircraft without damage");
+  assert.ok(bombAirState.projectiles.includes(bomb));
+
+  // Place enemy Heli directly in bomb path -> deals exact 100 air damage
+  enemyTargetHeli.x = bomb.x + bomb.vx / 60;
+  enemyTargetHeli.y = bomb.y + (bomb.vy - 380 / 60) / 60 - 22;
+  enemyTargetHeli.vx = 0;
+  stepSimulation(bombAirState, { p1: { right: true } });
+  assert.equal(enemyTargetHeli.hp, 200, "P-47 dive bomb deals exact 100 air damage to enemy Helicopter");
+
+  // 2 P-47 dive bombs kill enemy P-47 (move earlier heli target out of the drop corridor)
+  enemyTargetHeli.x = -5000;
+  for (let bNum = 1; bNum <= 2; bNum++) {
+    bomber.x = -1000;
+    bomber.y = 420;
+    bomber.vx = 510;
+    bomber.speed = 510;
+    bomber.vy = 0;
+    bomber.secondaryCooldown = 0;
+    stepSimulation(bombAirState, { p1: { right: true, fireSecondary: true } });
+    const b2 = bombAirState.projectiles.find((p) => p.kind === "p47_bomb");
+    for (let t = 0; t < 10; t++) stepSimulation(bombAirState, { p1: { right: true } });
+    enemyTargetP47.x = b2.x + b2.vx / 60;
+    enemyTargetP47.y = b2.y + (b2.vy - 380 / 60) / 60 - 22;
+    enemyTargetP47.vx = 0;
+    enemyTargetP47.vy = 0;
+    stepSimulation(bombAirState, { p1: { right: true } });
+  }
+  assert.equal(enemyTargetP47.alive, false, "2 P-47 dive bombs kill enemy P-47");
+});
+
+test("Heli missile deals 70% damage & reduced blast when hitting before full booster speed vs 100% from elevated standoff", () => {
+  // 1. Low hover hits ground before completing drop -> reducedImpact explosion & no booster ignition
+  const lowGroundState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const lowHeli = addPlayer(lowGroundState, "h1", "allied", "heli");
+  lowHeli.x = 0;
+  lowHeli.y = 12;
+  lowHeli.vx = 0;
+  lowHeli.pitch = 0;
+  stepSimulation(lowGroundState, { h1: { fireSecondary: true } });
+  let groundExp = null;
+  let ignited = false;
+  for (let t = 0; t < 20; t++) {
+    lowHeli.y = 12;
+    stepSimulation(lowGroundState, { h1: {} });
+    if (lowGroundState.events.some((e) => e.type === "missile_booster_ignited")) ignited = true;
+    const ex = lowGroundState.events.find((e) => e.type === "explosion");
+    if (ex) {
+      groundExp = ex;
+      break;
+    }
+  }
+  assert.equal(ignited, false, "Low hover missile hits ground during drop before booster ignites");
+  assert.ok(groundExp, "Ground impact emits explosion");
+  assert.equal(groundExp.reducedImpact, true, "Premature ground impact marks reducedImpact");
+  assert.ok(Math.abs(groundExp.size - 1.0 * HELI_MISSILE_UNBOOSTED_DAMAGE_MULT) < 1e-6, "Premature impact blast size scales to 70%");
+
+  // 2. Close/low shot hitting ground tank during drop/boost deals 70% damage (112) & reduced blast
+  const closeTankState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const closeHeli = addPlayer(closeTankState, "h1", "allied", "heli");
+  closeHeli.x = 0;
+  closeHeli.y = 40;
+  closeHeli.vx = 0;
+  closeHeli.pitch = 0;
+  const closeTank = spawnGroundUnit(closeTankState, "enemy", "3", 120);
+  closeTank.holdPosition = true;
+  closeTank.passiveDummy = true;
+  stepSimulation(closeTankState, { h1: { fireSecondary: true } });
+  let closeExp = null;
+  for (let t = 0; t < 25; t++) {
+    closeHeli.y = 40;
+    stepSimulation(closeTankState, { h1: {} });
+    const ex = closeTankState.events.find((e) => e.type === "explosion");
+    if (ex) {
+      closeExp = ex;
+      break;
+    }
+  }
+  assert.equal(closeTank.hp, closeTank.maxHp - Math.round(AIRCRAFT_CONFIG.heli.missileDamage * 0.7), "Unboosted heli missile deals exact 70% damage (112) to ground tank");
+  assert.equal(closeExp?.reducedImpact, true);
+  assert.ok(Math.abs(closeExp.size - 1.25 * 0.7) < 1e-6, "Unboosted tank hit blast size scales to 70%");
+
+  // 3. Close shot hitting enemy aircraft during drop/boost deals 70% air damage (70)
+  const closeAirState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const airShooter = addPlayer(closeAirState, "h1", "allied", "heli");
+  airShooter.x = 0;
+  airShooter.y = 200;
+  airShooter.vx = 0;
+  airShooter.pitch = 0;
+  const closeEnemy = addPlayer(closeAirState, "e1", "enemy", "heli");
+  closeEnemy.x = 80;
+  closeEnemy.y = 165;
+  stepSimulation(closeAirState, { h1: { fireSecondary: true } });
+  let airExp = null;
+  for (let t = 0; t < 20; t++) {
+    airShooter.y = 200;
+    closeEnemy.x = 80;
+    closeEnemy.y = 165;
+    stepSimulation(closeAirState, { h1: {}, e1: {} });
+    const ex = closeAirState.events.find((e) => e.type === "explosion");
+    if (ex) {
+      airExp = ex;
+      break;
+    }
+  }
+  assert.equal(closeEnemy.hp, 300 - 70, "Unboosted heli missile deals exact 70% air damage (70)");
+  assert.equal(airExp?.reducedImpact, true);
+
+  // 4. Elevated standoff shot completes drop + rapid boost and deals full 100% damage (160)
+  const highState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const highHeli = addPlayer(highState, "h1", "allied", "heli");
+  highHeli.x = 0;
+  highHeli.y = 65;
+  highHeli.vx = 0;
+  highHeli.pitch = 0;
+  const farTank = spawnGroundUnit(highState, "enemy", "3", 500);
+  farTank.holdPosition = true;
+  farTank.passiveDummy = true;
+  stepSimulation(highState, { h1: { fireSecondary: true } });
+  let highExp = null;
+  let highBoosted = false;
+  for (let t = 0; t < 60; t++) {
+    highHeli.y = 65;
+    stepSimulation(highState, { h1: {} });
+    if (highState.events.some((e) => e.type === "missile_booster_ignited")) highBoosted = true;
+    const ex = highState.events.find((e) => e.type === "explosion");
+    if (ex) {
+      highExp = ex;
+      break;
+    }
+  }
+  assert.equal(highBoosted, true, "Elevated missile ignites booster before impact");
+  assert.equal(farTank.hp, farTank.maxHp - AIRCRAFT_CONFIG.heli.missileDamage, "Full-speed heli missile deals 100% ground damage (160)");
+  assert.equal(Boolean(highExp?.reducedImpact), false, "Full-speed impact does not have reducedImpact");
+  assert.ok(Math.abs(highExp.size - 1.25) < 1e-6, "Full-speed impact keeps full explosion size");
+
+  // 5. Renderer emits no smoke during drop phase and emits booster smoke during boost phase
+  const noopCtx = {
+    fillStyle: "", strokeStyle: "", lineWidth: 1, font: "", textAlign: "left", globalAlpha: 1,
+    setTransform() {}, createLinearGradient() { return { addColorStop() {} }; },
+    fillRect() {}, strokeRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, closePath() {},
+    fill() {}, stroke() {}, ellipse() {}, arc() {}, save() {}, restore() {},
+    translate() {}, rotate() {}, scale() {}, setLineDash() {}, fillText() {}, drawImage() {}
+  };
+  const renderer = new SpriteBattlefieldRenderer({
+    width: 1280, height: 720,
+    getContext: () => noopCtx,
+    getBoundingClientRect: () => ({ width: 1280, height: 720 })
+  });
+  for (const name of ["v2_missile", "heli_fly_1", "base_hq", "v2_silo", "bunker"]) {
+    renderer.sprites.set(name, { name, naturalWidth: 64, naturalHeight: 32 });
+    renderer.enemyTinted.set(name, { name: `${name}_e`, naturalWidth: 64, naturalHeight: 32 });
+  }
+  renderer.camX = 0; renderer.camY = 200; renderer.camZoom = 1;
+  const hadWindow = "window" in globalThis;
+  const prevWindow = globalThis.window;
+  globalThis.window = { devicePixelRatio: 1 };
+  try {
+    const rState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    rState.tick = 1;
+    const rh = addPlayer(rState, "h1", "allied", "heli");
+    rh.x = 0; rh.y = 200;
+    rState.projectiles.push({
+      id: "drop_m", kind: "heli_missile", team: "allied", x: 30, y: 190, vx: 50, vy: -90,
+      launchDir: 1, launchAngle: 0, missileStage: "drop", fuelBurnedOut: false
+    });
+    renderer.render(rState, "h1", 1 / 60);
+    assert.equal(renderer.smokeTrail.length, 0, "Dropping heli missile emits zero smoke before booster ignites");
+
+    rState.projectiles[0].missileStage = "boost";
+    rState.projectiles[0].vx = 600;
+    rState.projectiles[0].vy = 0;
+    renderer.render(rState, "h1", 1 / 60);
+    assert.equal(renderer.smokeTrail.length, 1, "Boosting heli missile emits booster ignition smoke");
+  } finally {
+    if (hadWindow) globalThis.window = prevWindow;
+    else delete globalThis.window;
+  }
+});
+
+test("Aircraft primary cannon projectiles travel visual range before disappearing", () => {
+  // P-47 primary bullet disappears once it covers AIRCRAFT_CONFIG.p47.primaryRange (1600m)
+  const pState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const p47 = addPlayer(pState, "p1", "allied", "p47");
+  p47.x = -2000;
+  p47.y = 600;
+  p47.dir = 1;
+  p47.speed = AIRCRAFT_CONFIG.p47.cruiseSpeed;
+  p47.vx = AIRCRAFT_CONFIG.p47.cruiseSpeed;
+  stepSimulation(pState, { p1: { right: true, firePrimary: true } });
+  const pBullet = pState.projectiles.find((p) => p.kind === "bullet");
+  assert.ok(pBullet);
+  assert.equal(pBullet.maxRange, AIRCRAFT_CONFIG.p47.primaryRange);
+
+  let expiredTick = -1;
+  let lastDist = 0;
+  for (let t = 0; t < 120; t++) {
+    lastDist = pBullet.distanceTraveled;
+    stepSimulation(pState, { p1: { right: true } });
+    if (!pState.projectiles.includes(pBullet)) {
+      expiredTick = t + 1;
+      break;
+    }
+  }
+  assert.ok(expiredTick > 0 && expiredTick < 90, "P-47 bullet disappears upon reaching visual range before lifeTicks timeout");
+  assert.ok(pBullet.distanceTraveled >= AIRCRAFT_CONFIG.p47.primaryRange, "Bullet traveled full primaryRange");
+  assert.ok(lastDist < AIRCRAFT_CONFIG.p47.primaryRange, "Bullet stayed alive while under primaryRange");
+
+  // Heli primary bullet disappears once it covers AIRCRAFT_CONFIG.heli.primaryRange (1100m)
+  const hState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+  const heli = addPlayer(hState, "h1", "allied", "heli");
+  heli.x = -2000;
+  heli.y = 600;
+  heli.dir = 1;
+  heli.vx = 0;
+  heli.pitch = 0;
+  stepSimulation(hState, { h1: { firePrimary: true } });
+  const hBullet = hState.projectiles.find((p) => p.kind === "bullet");
+  assert.ok(hBullet);
+  assert.equal(hBullet.maxRange, AIRCRAFT_CONFIG.heli.primaryRange);
+
+  let hExpiredTick = -1;
+  let hLastDist = 0;
+  for (let t = 0; t < 120; t++) {
+    hLastDist = hBullet.distanceTraveled;
+    stepSimulation(hState, { h1: {} });
+    if (!hState.projectiles.includes(hBullet)) {
+      hExpiredTick = t + 1;
+      break;
+    }
+  }
+  assert.ok(hExpiredTick > 0 && hExpiredTick < 90, "Heli bullet disappears upon reaching visual range");
+  assert.ok(hBullet.distanceTraveled >= AIRCRAFT_CONFIG.heli.primaryRange);
+  assert.ok(hLastDist < AIRCRAFT_CONFIG.heli.primaryRange);
+});
+
+test("Shorter primary burst kills a plane only on 100% rapid-unload hits; missing a few leaves HP remaining", () => {
+  assert.ok(BURST_MAX_TICKS < 90, "Burst duration is shorter than original 90 ticks");
+  assert.equal(BURST_MAX_TICKS, 80);
+  assert.equal(BURST_MAX_TICKS / BURST_FIRE_INTERVAL, 16);
+  assert.equal(AIRCRAFT_CONFIG.p47.primaryDamage, 13);
+  assert.equal(AIRCRAFT_CONFIG.heli.primaryDamage, 13);
+
+  const runBurstUnload = (shooterType, targetType, fireTicks) => {
+    const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    const shooter = addPlayer(state, "s1", "allied", shooterType);
+    const target = addPlayer(state, "t1", "enemy", targetType);
+    shooter.x = -500;
+    shooter.y = 300;
+    shooter.dir = 1;
+    shooter.speed = shooterType === "p47" ? AIRCRAFT_CONFIG.p47.cruiseSpeed : 0;
+    shooter.vx = shooterType === "p47" ? AIRCRAFT_CONFIG.p47.cruiseSpeed : 0;
+    shooter.pitch = 0;
+    shooter.effectivePitch = 0;
+
+    for (let t = 0; t < fireTicks + 15; t++) {
+      shooter.y = 300;
+      shooter.pitch = 0;
+      shooter.effectivePitch = 0;
+      const muzzleY = shooter.y + (shooterType === "heli" ? 8 : 18);
+      target.x = shooter.x + 150;
+      target.y = muzzleY - 22;
+      target.vx = 0;
+      target.vy = 0;
+      target.pitch = 0;
+      stepSimulation(state, { s1: { firePrimary: t < fireTicks }, t1: {} });
+    }
+    return target;
+  };
+
+  // Full 16/16 rapid-fire unload from P-47 or Heli kills enemy Plane (200 HP)
+  const killedByPlane = runBurstUnload("p47", "p47", BURST_MAX_TICKS);
+  assert.equal(killedByPlane.alive, false, "Full rapid-fire P-47 burst hitting every shot kills enemy Plane");
+  assert.equal(killedByPlane.hp, 0);
+
+  const killedByHeli = runBurstUnload("heli", "p47", BURST_MAX_TICKS);
+  assert.equal(killedByHeli.alive, false, "Full rapid-fire Heli burst hitting every shot kills enemy Plane");
+  assert.equal(killedByHeli.hp, 0);
+
+  // Missing 1 shot (15/16 hit) leaves Plane alive with 5 HP
+  const missedOne = runBurstUnload("p47", "p47", BURST_MAX_TICKS - BURST_FIRE_INTERVAL);
+  assert.equal(missedOne.alive, true, "Missing 1 bullet out of the rapid burst leaves enemy Plane alive");
+  assert.equal(missedOne.hp, 5);
+
+  // Missing 3 shots (13/16 hit) leaves Plane alive with 31 HP
+  const missedThree = runBurstUnload("p47", "p47", BURST_MAX_TICKS - 3 * BURST_FIRE_INTERVAL);
+  assert.equal(missedThree.alive, true, "Missing 3 bullets leaves enemy Plane alive with 31 HP");
+  assert.equal(missedThree.hp, 31);
+
+  // Full 16/16 rapid-fire unload leaves tankier Helicopter (300 HP) alive at 92 HP
+  const survivingHeli = runBurstUnload("p47", "heli", BURST_MAX_TICKS);
+  assert.equal(survivingHeli.alive, true, "Tankier Helicopter survives a single full rapid-fire burst");
+  assert.equal(survivingHeli.hp, 92);
 });

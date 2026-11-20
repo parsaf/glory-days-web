@@ -11,12 +11,18 @@ export const CEILING_Y = 1200;
 export const MISSILE_FUEL_DISTANCE = WORLD_WIDTH / 3; // 4000m
 export const GRAVITY = 380;
 
+// Unified air-to-air / SAM ordnance balance & Heli missile drop/boost mechanics
+export const AIRCRAFT_ORDNANCE_DAMAGE = 100;
+export const HELI_MISSILE_DROP_TICKS = 12;            // 0.20s drop under heli belly
+export const HELI_MISSILE_BOOST_TICKS = 12;           // 0.20s rapid booster acceleration
+export const HELI_MISSILE_UNBOOSTED_DAMAGE_MULT = 0.7;
+
 // 60 Hz Primary Gun Burst-Fire Reservoir constants
-export const BURST_MAX_TICKS = 90;         // 1.5s rapid fire buffer
+export const BURST_MAX_TICKS = 80;         // 1.33s rapid fire buffer (16 shots)
 export const BURST_FIRE_INTERVAL = 5;      // 12 shots/sec while reservoir > 0
 export const SLOW_FIRE_INTERVAL = 30;      // 1 shot per 0.5s once empty
 export const BURST_RECHARGE_DELAY = 120;   // 2.0s trigger-off wait before recharge
-export const BURST_RECHARGE_RATE = 3;      // refills 90 ticks in 30 ticks (0.5s)
+export const BURST_RECHARGE_RATE = 3;      // refills 80 ticks in 27 ticks (0.45s)
 
 // Base & Map Landmarks
 export const BASES = {
@@ -47,11 +53,11 @@ export const AIRCRAFT_CONFIG = {
   heli: {
     id: "heli",
     label: "Attack & Transport Helicopter",
-    maxHp: 350,
-    maxSpeedX: 280,
-    maxSpeedY: 210,
-    accelX: 520,
-    accelY: 560,
+    maxHp: 300,
+    maxSpeedX: 380,
+    maxSpeedY: 270,
+    accelX: 700,
+    accelY: 720,
     horizDragRate: 2.53,
     groundDragRate: 4.6,
     verticalDamping: 3.0,
@@ -64,12 +70,14 @@ export const AIRCRAFT_CONFIG = {
     turnSpeedThreshold: 35,
     turnDriftScale: 0.45,
     idleSinkSpeed: 24,
-    crashLandingVy: 185,
-    primarySpeed: 1050,
+    crashLandingVy: 235,
+    primarySpeed: 1150,
+    primaryRange: 1100,
     primaryAngleDeg: 0, // straight out front of cockpit (tilts with pitch)
-    primaryDamage: 14,
-    missileSpeed: 820,
+    primaryDamage: 13,
+    missileSpeed: 960,
     missileDamage: 160,
+    missileAirDamage: 100,
     secondaryDamage: 160,
     missileFuelDistance: 4000,
     pickupMaxAlt: 15,
@@ -82,17 +90,17 @@ export const AIRCRAFT_CONFIG = {
   p47: {
     id: "p47",
     label: "P-47 Thunderbolt",
-    maxHp: 300,
-    cruiseSpeed: 380,
-    maxSpeed: 540,
-    accelRate: 260,
+    maxHp: 200,
+    cruiseSpeed: 510,
+    maxSpeed: 720,
+    accelRate: 360,
     throttleReleaseDelay: 1.10, // Stage 2 grace period lift duration (s)
-    dragDecelRate: 160,
-    brakeTapStep: 45,           // Speed shaved on each opposite-key tap (px/s)
-    brakeDecelRate: 500,        // Continuous braking when holding opposite key (px/s^2)
+    dragDecelRate: 220,
+    brakeTapStep: 55,           // Speed shaved on each opposite-key tap (px/s)
+    brakeDecelRate: 620,        // Continuous braking when holding opposite key (px/s^2)
     turnHoldThreshold: 0.14,    // Opposite-key hold at min speed before U-turn (s)
-    stallSpeed: 220,
-    minGlideSpeed: 230,         // Minimum flight speed & turnaround speed floor
+    stallSpeed: 250,
+    minGlideSpeed: 260,         // Minimum flight speed & turnaround speed floor
     stallGlideDelay: 1.40,      // Stage 3 slow-descent duration before Stage 4 (s)
     glidePitch: -0.18,          // Stage 3 slight nose-down tilt (rad)
     maxDivePitch: -0.56,        // Stage 4 nose-down tilt matching -maxPitch (rad)
@@ -102,7 +110,7 @@ export const AIRCRAFT_CONFIG = {
     diveGravityAccel: 0,
     stallSinkGravity: 85,       // Stage 3 slow descent rate (px/s)
     stage4SinkRate: 195,        // Stage 4 faster descent rate (px/s)
-    takeoffSpeed: 185,
+    takeoffSpeed: 210,
     safeLandingVy: 45,
     safeLandingPitch: 0.26,
     bounceElasticity: 0.55,
@@ -120,9 +128,11 @@ export const AIRCRAFT_CONFIG = {
     sineOmega: 1.15,        // long horizontal wavelength
     sineAmpVel: 18,         // gentle vertical velocity wave
     sinePitchAmp: 0.032,    // subtle matching nose pitch
-    primarySpeed: 1250,
-    primaryDamage: 16,
+    primarySpeed: 1300,
+    primaryRange: 1600,
+    primaryDamage: 13,
     bombDamage: 145,
+    bombAirDamage: 100,
     secondaryDamage: 145,
     hitRadius: 30
   }
@@ -154,8 +164,8 @@ export const HELI_BOT_CONFIG = {
   // Frontline ground attack & bunker breaking
   groundMaxBehindFront: 1800,     // Focus on enemy frontline echelon
   bunkerMaxBehindFront: 2000,     // Break frontline bunkers & immediate support bunker, not deep rear
-  strafeBreakDist: 135,           // Close-in distance to break off a gunship strafing pass
-  strafeStandoffDist: 480,        // Pull-back distance on friendly side before re-attacking
+  strafeBreakDist: 195,           // Close-in distance to break off a gunship strafing pass
+  strafeStandoffDist: 580,        // Pull-back distance on friendly side before re-attacking
   minCombatY: 52,                 // Stay above horizontal MBT/howitzer/infantry fire (y <= 38)
   maxCombatY: 175,                // Ceiling for ground strafe alignment
 
@@ -465,10 +475,10 @@ export const UNIT_CONFIG = {
     speed: 78,
     visualRange: 750,
     samRange: 750,
-    samDamage: 65,
+    samDamage: 100,
     samCooldownTicks: 78,
     samMaxFlightTime: 2.6,
-    samSpeeds: { slow: 320, medium: 520, fast: 760 },
+    samSpeeds: { slow: 360, medium: 600, fast: 960 },
     groundRange: 210,
     groundDamage: 9,
     groundFireCooldownTicks: 26,
@@ -591,7 +601,7 @@ export const DEFENSE_CONFIG = {
     flakCooldownTicks: 20,
     flakSpeed: 780,
     samRange: 1100,
-    samDamage: 75,
+    samDamage: 100,
     samCooldownTicks: 120,
     samSpeed: 470
   }
