@@ -18,12 +18,14 @@ import {
   returnToLobby,
   setAutoProduction,
   setPlayerLobbyChoice,
+  spawnPlayerHeliTest,
   spawnPlayerP47Test,
   startMatch,
   stepSimulation,
   swapPlayerAircraft,
   syncBotPlayers,
   updateGroundConfig,
+  updateHeliConfig,
   updateP47Config
 } from "../shared/simulation.mjs";
 
@@ -175,6 +177,24 @@ function replaceSourceBlock(src, startToken, endToken, transform) {
   const block = src.slice(startIdx, endIdx + endToken.length);
   const nextBlock = transform(block);
   return src.slice(0, startIdx) + nextBlock + src.slice(endIdx + endToken.length);
+}
+
+function persistHeliConfigToFile(config) {
+  try {
+    const constantsPath = path.join(SHARED_DIR, "constants.mjs");
+    const src = fs.readFileSync(constantsPath, "utf8");
+    const nextSrc = replaceSourceBlock(src, "export const AIRCRAFT_CONFIG = {\n", "\n};", (airSection) =>
+      replaceSourceBlock(airSection, "  heli: {\n", "\n  },", (sub) =>
+        applyBlockPrimitives(sub, config)
+      )
+    );
+    if (nextSrc !== src) {
+      fs.writeFileSync(constantsPath, nextSrc, "utf8");
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function persistGroundConfigToFile(config) {
@@ -351,6 +371,7 @@ function attachClientToRoom(client, targetRoom, choice = {}) {
       state: createNetworkSnapshot(targetRoom.state),
       rooms: getRoomsSummary(),
       p47Config: { ...AIRCRAFT_CONFIG.p47 },
+      heliConfig: { ...AIRCRAFT_CONFIG.heli },
       groundConfig: getGroundConfigSnapshot()
     })));
   }
@@ -409,6 +430,7 @@ server.on("upgrade", (req, socket) => {
   if (isTunerOnly) {
     if (!socket.destroyed) {
       socket.write(encodeWsFrame(JSON.stringify({ type: "p47Config", config: { ...AIRCRAFT_CONFIG.p47 } })));
+      socket.write(encodeWsFrame(JSON.stringify({ type: "heliConfig", config: { ...AIRCRAFT_CONFIG.heli } })));
       socket.write(encodeWsFrame(JSON.stringify({ type: "groundConfig", config: getGroundConfigSnapshot() })));
     }
   } else {
@@ -443,6 +465,18 @@ server.on("upgrade", (req, socket) => {
               persistP47ConfigToFile(config);
             }
             const frame = encodeWsFrame(JSON.stringify({ type: "p47Config", config }));
+            for (const c of allClients.values()) {
+              if (!c.socket.destroyed) c.socket.write(frame);
+            }
+            continue;
+          }
+
+          if (cmd.type === "updateHeliConfig" && cmd.patch) {
+            const config = updateHeliConfig(cmd.patch);
+            if (cmd.persist === true) {
+              persistHeliConfigToFile(config);
+            }
+            const frame = encodeWsFrame(JSON.stringify({ type: "heliConfig", config }));
             for (const c of allClients.values()) {
               if (!c.socket.destroyed) c.socket.write(frame);
             }
@@ -546,6 +580,8 @@ server.on("upgrade", (req, socket) => {
             broadcastRoomSnapshot(room, room.state.events);
           } else if (cmd.type === "spawnP47Test") {
             spawnPlayerP47Test(room.state, playerId, cmd.mode || "air");
+          } else if (cmd.type === "spawnHeliTest") {
+            spawnPlayerHeliTest(room.state, playerId, cmd.mode || "hover");
           }
         } catch {
           // Ignore malformed JSON payloads

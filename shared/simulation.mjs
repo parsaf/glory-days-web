@@ -17,6 +17,7 @@ import {
   CIVILIAN_KILL_PENALTY,
   DEFAULT_BUNKER_CONFIG,
   DEFAULT_GROUND_BEHAVIOR_CONFIG,
+  DEFAULT_HELI_CONFIG,
   DEFAULT_P47_CONFIG,
   DEFAULT_UNIT_CONFIG,
   DEFENSE_CONFIG,
@@ -730,6 +731,30 @@ export function updateP47Config(patch = {}) {
   return { ...AIRCRAFT_CONFIG.p47 };
 }
 
+export function updateHeliConfig(patch = {}) {
+  if (!patch || typeof patch !== "object") {
+    return { ...AIRCRAFT_CONFIG.heli };
+  }
+  if (patch.reset) {
+    Object.assign(AIRCRAFT_CONFIG.heli, DEFAULT_HELI_CONFIG);
+  }
+  for (const [key, rawVal] of Object.entries(patch)) {
+    if (!(key in DEFAULT_HELI_CONFIG)) continue;
+    if (typeof DEFAULT_HELI_CONFIG[key] === "number") {
+      const num = Number(rawVal);
+      if (Number.isFinite(num)) {
+        AIRCRAFT_CONFIG.heli[key] = num;
+      }
+    }
+  }
+  if ("missileDamage" in patch && !("secondaryDamage" in patch)) {
+    AIRCRAFT_CONFIG.heli.secondaryDamage = AIRCRAFT_CONFIG.heli.missileDamage;
+  } else if ("secondaryDamage" in patch && !("missileDamage" in patch)) {
+    AIRCRAFT_CONFIG.heli.missileDamage = AIRCRAFT_CONFIG.heli.secondaryDamage;
+  }
+  return { ...AIRCRAFT_CONFIG.heli };
+}
+
 function cloneUnitConfig(cfg) {
   return {
     ...cfg,
@@ -952,6 +977,146 @@ export function spawnPlayerP47Test(state, playerId, mode = "air") {
   }
 
   state.events.push({ type: "p47_test_spawned", playerId, mode, tick: state.tick });
+  return true;
+}
+
+export function spawnPlayerHeliTest(state, playerId, mode = "hover") {
+  const player = state.players[playerId];
+  if (!player) return false;
+  const base = BASES[player.team];
+  const cfg = AIRCRAFT_CONFIG.heli;
+  const dir = player.team === "allied" ? 1 : -1;
+  const enemyTeam = player.team === "allied" ? "enemy" : "allied";
+  const cabinCap = Math.max(0, Math.floor(cfg.cabinCapacity));
+
+  player.aircraftType = "heli";
+  player.maxHp = cfg.maxHp;
+  player.hp = cfg.maxHp;
+  player.secondaryAmmo = cfg.maxSecondary;
+  player.maxSecondary = cfg.maxSecondary;
+  resetPlayerRaidAccuracy(player);
+  player.cabinCapacity = cfg.cabinCapacity;
+  player.passengers = [];
+  player.alive = true;
+  player.crashing = false;
+  player.crashSlideTicks = 0;
+  player.respawnTicks = 0;
+  player.turnTimer = 0;
+  player.turnDuration = Math.max(0.05, cfg.turnDuration);
+  player.dir = dir;
+  player.turnStartDir = dir;
+  player.turnStartSpeed = 0;
+  player.burstReservoir = BURST_MAX_TICKS;
+  player.primaryCooldown = 0;
+  player.primaryIdleTicks = 0;
+  player.secondaryCooldown = 0;
+  player.resupplyTicks = 0;
+  player.throttleOffTime = 0;
+  player.stallTime = 0;
+  player.stallVy = 0;
+  player.pitch = 0;
+  player.effectivePitch = 0;
+  player.airborneTime = 0;
+  player.wavePhase = 0;
+  player.flightStage = 1;
+  player.prevHInput = 0;
+  player.oppHoldTime = 0;
+  player.samWarningTicks = 0;
+  player.aaWarningTicks = 0;
+  player.controllingV2Id = null;
+
+  if (mode === "turn") {
+    player.x = dir * -1000;
+    player.y = 260;
+    player.vx = dir * cfg.maxSpeedX;
+    player.vy = 0;
+    player.pitch = -(cfg.maxTiltPitch ?? 0.24);
+    player.effectivePitch = player.pitch;
+    player.landedAtBase = false;
+    player.passengers = Array(Math.min(4, cabinCap)).fill("infantry");
+  } else if (mode === "weapons") {
+    player.x = dir * -700;
+    player.y = 150;
+    player.vx = 0;
+    player.vy = 0;
+    player.landedAtBase = false;
+    player.passengers = [];
+    const targets = [
+      ["infantry", player.x + dir * 280],
+      ["aa_truck", player.x + dir * 440],
+      ["mbt", player.x + dir * 580],
+      ["howitzer", player.x + dir * 880]
+    ];
+    for (const [kind, tx] of targets) {
+      const u = spawnGroundUnit(state, enemyTeam, kind, tx);
+      if (u) {
+        u.holdPosition = true;
+        u.passiveDummy = true;
+      }
+    }
+    const centerBunker = state.bunkers.find((b) => b.id === "bunker_2") || state.bunkers[2];
+    if (centerBunker) {
+      centerBunker.owner = enemyTeam;
+      centerBunker.hp = DEFENSE_CONFIG.bunker.maxHp;
+      centerBunker.maxHp = DEFENSE_CONFIG.bunker.maxHp;
+      centerBunker.passiveDummy = true;
+    }
+  } else if (mode === "paratroop") {
+    player.x = dir * -320;
+    player.y = 175;
+    player.vx = 0;
+    player.vy = 0;
+    player.landedAtBase = false;
+    player.passengers = Array(Math.min(4, cabinCap)).fill("infantry");
+    const centerBunker = state.bunkers.find((b) => b.id === "bunker_2") || state.bunkers[2];
+    if (centerBunker) {
+      centerBunker.owner = "neutral";
+      centerBunker.hp = DEFENSE_CONFIG.bunker.maxHp;
+      centerBunker.maxHp = DEFENSE_CONFIG.bunker.maxHp;
+      centerBunker.passiveDummy = false;
+    }
+    for (const offset of [240, 200, 160]) {
+      spawnGroundUnit(state, player.team, "infantry", player.x - dir * offset);
+    }
+  } else if (mode === "rescue") {
+    player.x = dir * -4620;
+    player.y = 115;
+    player.vx = 0;
+    player.vy = 0;
+    player.landedAtBase = false;
+    player.passengers = [];
+    for (const offset of [80, 150, 220, 290]) {
+      const cx = player.x + dir * offset;
+      spawnCivilian(state, cx, cx);
+    }
+  } else if (mode === "hard_landing") {
+    player.x = dir * -400;
+    player.y = 210;
+    player.vx = dir * 40;
+    player.vy = -90;
+    player.landedAtBase = false;
+    player.passengers = [];
+  } else if (mode === "helipad") {
+    player.x = base.padCenterX;
+    player.y = 0;
+    player.vx = 0;
+    player.vy = 0;
+    player.landedAtBase = true;
+    player.hp = Math.round(cfg.maxHp * 0.55);
+    player.secondaryAmmo = Math.floor(cfg.maxSecondary * 0.5);
+    player.passengers = Array(Math.min(2, cabinCap)).fill("infantry");
+  } else {
+    // "hover" default
+    player.x = dir * -800;
+    player.y = 260;
+    player.vx = 0;
+    player.vy = 0;
+    player.landedAtBase = false;
+    player.passengers = Array(Math.min(4, cabinCap)).fill("infantry");
+  }
+
+  player.speed = Math.hypot(player.vx, player.vy);
+  state.events.push({ type: "heli_test_spawned", playerId, mode, tick: state.tick });
   return true;
 }
 
@@ -1195,9 +1360,12 @@ function hasApproachingFriendlyInfantry(state, player, maxDist = 200) {
 }
 
 function updateInfantryBoarding(state, resolvedInputs = {}) {
+  const heliCfg = AIRCRAFT_CONFIG.heli;
+  const maxAlt = heliCfg.pickupMaxAlt ?? 15;
+  const maxSpeed = heliCfg.pickupMaxSpeed ?? 95;
   for (const player of Object.values(state.players)) {
     if (!player.alive || player.crashing || player.aircraftType !== "heli") continue;
-    if (player.y > 15 || Math.abs(player.vx) >= 95) continue;
+    if (player.y > maxAlt || Math.abs(player.vx) >= maxSpeed) continue;
     if (player.passengers.length >= player.cabinCapacity) continue;
 
     const inp = resolvedInputs[player.id] || {};
@@ -1213,9 +1381,11 @@ function updateInfantryBoarding(state, resolvedInputs = {}) {
 export function handlePlayerUtility(state, playerId) {
   const player = state.players[playerId];
   if (!player || !player.alive || player.aircraftType !== "heli") return false;
+  const heliCfg = AIRCRAFT_CONFIG.heli;
+  const pickupMaxAlt = heliCfg.pickupMaxAlt ?? 15;
 
   // Low/Landed: pick up nearby friendly infantry, load at base garrison, or drop off infantry on ground
-  if (player.y <= 15) {
+  if (player.y <= pickupMaxAlt) {
     if (player.passengers.length < player.cabinCapacity && pickupNearbyFriendlyInfantry(state, player, 64)) {
       return true;
     }
@@ -1247,7 +1417,7 @@ export function handlePlayerUtility(state, playerId) {
   }
 
   // Airborne: drop 1 infantry paratrooper from cabin (never drop rescued civilians!)
-  if (player.y > 15 && player.passengers.length > 0) {
+  if (player.y > pickupMaxAlt && player.passengers.length > 0) {
     const idx = player.passengers.lastIndexOf("infantry");
     if (idx === -1) return false;
     const [unitKind] = player.passengers.splice(idx, 1);
@@ -1258,8 +1428,8 @@ export function handlePlayerUtility(state, playerId) {
       kind: unitKind,
       x: player.x,
       y: player.y - 18,
-      vx: player.vx * 0.25,
-      vy: -65,
+      vx: player.vx * (heliCfg.paraDropVxFactor ?? 0.25),
+      vy: -Math.max(10, heliCfg.paraDescentSpeed ?? 65),
       dir: player.dir,
       phase: "descent", // 'descent' | 'collapse' | 'march'
       collapseTimer: 0,
@@ -1275,25 +1445,37 @@ export function handlePlayerUtility(state, playerId) {
   return false;
 }
 
-function updateHeli(player, input, dt) {
+export function updateHeli(player, input, dt) {
   const cfg = AIRCRAFT_CONFIG.heli;
   const hInput = (input.right ? 1 : 0) - (input.left ? 1 : 0);
   const vInput = (input.up ? 1 : 0) - (input.down ? 1 : 0);
+  const turnDur = Math.max(0.05, cfg.turnDuration);
+  const turnThresh = cfg.turnSpeedThreshold ?? 35;
+  const driftScale = cfg.turnDriftScale ?? 0.45;
+  const horizDrag = Math.max(0, cfg.horizDragRate ?? 2.53);
+  const groundDrag = Math.max(0, cfg.groundDragRate ?? 4.6);
+  const maxTilt = cfg.maxTiltPitch ?? 0.24;
+  const tiltResp = Math.max(0.1, cfg.tiltResponse ?? 8.0);
+  const vertDamp = Math.max(0, cfg.verticalDamping ?? 3.0);
+  const crashVy = Math.max(10, cfg.crashLandingVy ?? 185);
+  const maxVx = Math.max(1, cfg.maxSpeedX);
 
   if (player.turnTimer > 0) {
     player.turnTimer += dt;
-    const p = Math.min(1, player.turnTimer / cfg.turnDuration);
-    player.vx = player.turnStartDir * Math.min(110, Math.abs(player.turnStartSpeed) + 40) * 0.45 * Math.cos(Math.PI * p);
+    player.turnDuration = turnDur;
+    const p = Math.min(1, player.turnTimer / turnDur);
+    player.vx = player.turnStartDir * Math.min(110, Math.abs(player.turnStartSpeed) + 40) * driftScale * Math.cos(Math.PI * p);
     player.pitch *= 0.85;
-    if (player.turnTimer >= cfg.turnDuration) {
+    if (player.turnTimer >= turnDur) {
       player.turnTimer = 0;
       player.dir = -player.turnStartDir;
     }
   } else {
     // Trigger smooth turnaround when reversing thrust past low speed while airborne (or stationary)
-    if (hInput !== 0 && hInput !== player.dir && (player.y > 4 ? player.vx * player.dir <= 35 : true)) {
+    if (hInput !== 0 && hInput !== player.dir && (player.y > 4 ? player.vx * player.dir <= turnThresh : true)) {
       if (player.y > 4) {
         player.turnTimer = dt;
+        player.turnDuration = turnDur;
         player.turnStartDir = player.dir;
         player.turnStartSpeed = Math.abs(player.vx);
       } else {
@@ -1305,17 +1487,17 @@ function updateHeli(player, input, dt) {
       if (hInput !== 0) {
         player.vx += hInput * cfg.accelX * dt;
       } else {
-        player.vx *= Math.pow(0.08, dt);
+        player.vx *= Math.exp(-horizDrag * dt);
       }
       player.vx = clamp(player.vx, -cfg.maxSpeedX, cfg.maxSpeedX);
     } else {
-      player.vx *= Math.pow(0.01, dt);
+      player.vx *= Math.exp(-groundDrag * dt);
       if (Math.abs(player.vx) < 2) player.vx = 0;
     }
 
     // Target forward/backward pitch proportional to horizontal velocity
-    const targetPitch = player.y > 2 ? clamp((-player.vx * player.dir) / cfg.maxSpeedX, -1, 1) * 0.24 : 0;
-    player.pitch += (targetPitch - player.pitch) * Math.min(1, dt * 8);
+    const targetPitch = player.y > 2 ? clamp((-player.vx * player.dir) / maxVx, -1, 1) * maxTilt : 0;
+    player.pitch += (targetPitch - player.pitch) * Math.min(1, dt * tiltResp);
   }
 
   // Vertical collective hover physics (gentle gravity sink when no Up/Down input)
@@ -1327,7 +1509,7 @@ function updateHeli(player, input, dt) {
       player.vy += vInput * cfg.accelY * dt;
     }
   } else if (player.y > 0) {
-    player.vy += (-cfg.idleSinkSpeed - player.vy) * Math.min(1, dt * 3.0);
+    player.vy += (-cfg.idleSinkSpeed - player.vy) * Math.min(1, dt * vertDamp);
   }
   player.vy = clamp(player.vy, -cfg.maxSpeedY, cfg.maxSpeedY);
 
@@ -1336,7 +1518,9 @@ function updateHeli(player, input, dt) {
 
   if (player.y <= 0) {
     // Check hard crash vs safe touchdown
-    if (player.vy < -185 && !isOnFriendlyPad(player)) {
+    if (player.vy < -crashVy && !isOnFriendlyPad(player)) {
+      player.speed = Math.hypot(player.vx, player.vy);
+      player.effectivePitch = player.pitch;
       return "crash";
     }
     player.y = 0;
@@ -1346,6 +1530,8 @@ function updateHeli(player, input, dt) {
     if (player.vy > 0) player.vy = 0;
   }
 
+  player.speed = Math.hypot(player.vx, player.vy);
+  player.effectivePitch = player.pitch;
   player.airborneTime = player.y > 2 ? player.airborneTime + dt : 0;
   player.rotorPhase += dt * 20;
   return "ok";
@@ -1729,7 +1915,7 @@ function updateWeapons(state, player, input) {
         vy,
         damage: cfg.missileDamage,
         distanceTraveled: 0,
-        maxFuelDistance: MISSILE_FUEL_DISTANCE,
+        maxFuelDistance: Math.max(100, cfg.missileFuelDistance ?? MISSILE_FUEL_DISTANCE),
         fuelBurnedOut: false,
         lifeTicks: 420
       });
@@ -2669,13 +2855,17 @@ function updateCivilians(state) {
     civ.animPhase += DT * 6;
 
     let extractor = null;
-    let bestDist = 180;
+    let bestDist = Infinity;
+    const heliCfg = AIRCRAFT_CONFIG.heli;
+    const heliAttract = Math.max(24, heliCfg.civAttractRadius ?? 180);
+    const heliMaxAlt = heliCfg.pickupMaxAlt ?? 15;
+    const heliMaxSpeed = heliCfg.pickupMaxSpeed ?? 95;
 
     for (const p of Object.values(state.players)) {
       if (!p.alive || p.crashing || p.aircraftType !== "heli") continue;
-      if (p.y > 15 || Math.abs(p.vx) >= 95 || p.passengers.length >= p.cabinCapacity) continue;
+      if (p.y > heliMaxAlt || Math.abs(p.vx) >= heliMaxSpeed || p.passengers.length >= p.cabinCapacity) continue;
       const dist = Math.abs(p.x - civ.x);
-      if (dist <= bestDist) {
+      if (dist <= heliAttract && dist < bestDist) {
         bestDist = dist;
         extractor = { kind: "heli", id: p.id, x: p.x, team: p.team, ref: p };
       }
@@ -2684,7 +2874,7 @@ function updateCivilians(state) {
     for (const u of state.units) {
       if (u.hp <= 0 || u.kind !== "ambulance" || u.passengers.length >= u.cabinCapacity) continue;
       const dist = Math.abs(u.x - civ.x);
-      if (dist <= bestDist) {
+      if (dist <= 180 && dist < bestDist) {
         bestDist = dist;
         extractor = { kind: "ambulance", id: u.id, x: u.x, team: u.team, ref: u };
       }
