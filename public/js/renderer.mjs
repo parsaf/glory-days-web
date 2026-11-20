@@ -5,6 +5,7 @@ import {
   MISSILE_FUEL_DISTANCE,
   RENDER_HEIGHTS,
   STRATEGIC_CONFIG,
+  UNIT_CONFIG,
   WORLD_WIDTH
 } from "../../shared/constants.mjs";
 
@@ -32,6 +33,16 @@ export class SpriteBattlefieldRenderer {
     this.camY = 180;
     this.camZoom = 1.0;
     this.ready = false;
+    this.showHealthBars = true;
+    this.showUnitHealthBars = false;
+    this.showHealthText = false;
+    this.colorHealthBarsByHp = false;
+  }
+
+  clearEffects() {
+    this.explosions.length = 0;
+    this.smokeTrail.length = 0;
+    this.floatingLabels.length = 0;
   }
 
   async loadAll() {
@@ -176,7 +187,7 @@ export class SpriteBattlefieldRenderer {
     };
   }
 
-  render(state, localPlayerId, dt, b52Aiming = null) {
+  render(state, localPlayerId, dt, b52Aiming = null, cameraOverride = null) {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const rect = this.canvas.getBoundingClientRect();
     const w = Math.max(320, Math.floor(rect.width));
@@ -196,13 +207,38 @@ export class SpriteBattlefieldRenderer {
         camTarget = { x: v2.x, y: v2.y, vx: v2.vx, dir: v2.dir, aircraftType: "p47" };
       }
     }
-    this.updateCamera(camTarget, dt);
+    if (cameraOverride) {
+      if (!cameraOverride.manual) {
+        const tx = cameraOverride.x ?? this.camX;
+        const ty = cameraOverride.y ?? this.camY;
+        const tz = cameraOverride.zoom ?? this.camZoom;
+        if (cameraOverride.snap) {
+          this.camX = tx;
+          this.camY = ty;
+          this.camZoom = tz;
+        } else {
+          const lerpPos = Math.min(1, dt * 8);
+          const lerpZoom = Math.min(1, dt * 6);
+          this.camX += (tx - this.camX) * lerpPos;
+          this.camY += (ty - this.camY) * lerpPos;
+          this.camZoom += (tz - this.camZoom) * lerpZoom;
+        }
+      }
+    } else {
+      this.updateCamera(camTarget, dt);
+    }
 
     // Keep ground visible cleanly near lower fifth while climbing
     const groundScreenY = Math.min(h - 54, Math.max(h * 0.72, h * 0.82 + (this.camY - 150) * 0.35 * this.camZoom));
     this.lastViewW = w;
     this.lastViewH = h;
     this.lastGroundScreenY = groundScreenY;
+
+    const getHpColor = (hp, maxHp, defaultColor) => {
+      if (!this.colorHealthBarsByHp) return defaultColor;
+      const ratio = maxHp > 0 ? hp / maxHp : 0;
+      return ratio > 0.6 ? "#22c55e" : ratio > 0.3 ? "#f59e0b" : "#ef4444";
+    };
 
     // 1. 2.5D Sky Backdrop
     const sky = ctx.createLinearGradient(0, 0, 0, h);
@@ -232,10 +268,14 @@ export class SpriteBattlefieldRenderer {
     ctx.fillStyle = "#293524";
     ctx.fillRect(0, groundScreenY + 6 * this.camZoom, w, h - groundScreenY);
 
-    // World Distance Markers every 1,000m so P-47 4,000m (1/3 map) fuel range is legible
+    // World Distance Markers (every 200m in compact arenas, 1,000m on full map)
+    const worldMinX = state.worldBounds?.minX ?? MIN_X;
+    const worldMaxX = state.worldBounds?.maxX ?? MAX_X;
+    const markerStep = (worldMaxX - worldMinX) <= 4000 ? 200 : 1000;
+    const firstMark = Math.ceil(worldMinX / markerStep) * markerStep;
     ctx.font = "600 10px ui-monospace, monospace";
     ctx.textAlign = "center";
-    for (let wx = MIN_X; wx <= MAX_X; wx += 1000) {
+    for (let wx = firstMark; wx <= worldMaxX; wx += markerStep) {
       const { sx } = this.worldToScreen(wx, 0, w, groundScreenY);
       if (sx < -60 || sx > w + 60) continue;
       ctx.fillStyle = "rgba(255,255,255,0.22)";
@@ -243,29 +283,60 @@ export class SpriteBattlefieldRenderer {
       ctx.fillStyle = "rgba(226,232,240,0.55)";
       ctx.fillText(`${wx}m`, sx, groundScreenY + 22);
     }
+    if (state.worldBounds) {
+      ctx.save();
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.35)";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 6]);
+      for (const edgeX of [worldMinX, worldMaxX]) {
+        const { sx } = this.worldToScreen(edgeX, 0, w, groundScreenY);
+        if (sx >= -10 && sx <= w + 10) {
+          ctx.beginPath();
+          ctx.moveTo(sx, 0);
+          ctx.lineTo(sx, groundScreenY);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
     ctx.textAlign = "left";
 
     // 3. Bases & Landing Pads
     for (const side of ["allied", "enemy"]) {
+      const hq = state.hqs?.[side];
+      if (hq?.hidden) continue;
       const base = BASES[side];
-      const padLeft = this.worldToScreen(base.padMinX, 0, w, groundScreenY).sx;
-      const padRight = this.worldToScreen(base.padMaxX, 0, w, groundScreenY).sx;
+      const hqX = hq?.x ?? base.hqX;
+      const dx = hqX - base.hqX;
+      const padMin = hq?.compactBase ? hqX - 110 : base.padMinX + dx;
+      const padMax = hq?.compactBase ? hqX + 110 : base.padMaxX + dx;
+      const padLeft = this.worldToScreen(padMin, 0, w, groundScreenY).sx;
+      const padRight = this.worldToScreen(padMax, 0, w, groundScreenY).sx;
       ctx.fillStyle = "#334155";
       ctx.fillRect(padLeft, groundScreenY - 5 * this.camZoom, padRight - padLeft, 9 * this.camZoom);
       ctx.fillStyle = "#eab308";
       ctx.fillRect(padLeft + 10, groundScreenY - 2 * this.camZoom, Math.max(0, padRight - padLeft - 20), 2);
 
-      this.drawSprite("v2_silo", base.siloX, 0, RENDER_HEIGHTS.v2Silo, { team: side, flipX: side === "enemy" }, w, groundScreenY);
-      this.drawSprite("base_hq", base.hqX, 0, RENDER_HEIGHTS.baseHq, { team: side, flipX: side === "enemy" }, w, groundScreenY);
+      if (!hq?.compactBase) {
+        this.drawSprite("v2_silo", base.siloX + dx, 0, RENDER_HEIGHTS.v2Silo, { team: side, flipX: side === "enemy" }, w, groundScreenY);
+      }
+      this.drawSprite("base_hq", hqX, 0, RENDER_HEIGHTS.baseHq, { team: side, flipX: side === "enemy" }, w, groundScreenY);
 
-      const hq = state.hqs[side];
-      if (hq && hq.hp < hq.maxHp) {
-        const { sx, sy } = this.worldToScreen(base.hqX, RENDER_HEIGHTS.baseHq + 18, w, groundScreenY);
+      if (hq && this.showHealthBars && (hq.hp < hq.maxHp || this.showHealthText)) {
+        const { sx, sy } = this.worldToScreen(hqX, RENDER_HEIGHTS.baseHq + 18, w, groundScreenY);
         if (sx > -120 && sx < w + 120) {
+          const ratio = hq.maxHp > 0 ? Math.max(0, hq.hp / hq.maxHp) : 0;
           ctx.fillStyle = "rgba(0,0,0,0.65)";
           ctx.fillRect(sx - 44, sy, 88, 7);
-          ctx.fillStyle = side === "allied" ? "#3b82f6" : "#ef4444";
-          ctx.fillRect(sx - 44, sy, 88 * (hq.hp / hq.maxHp), 7);
+          ctx.fillStyle = getHpColor(hq.hp, hq.maxHp, side === "allied" ? "#3b82f6" : "#ef4444");
+          ctx.fillRect(sx - 44, sy, 88 * ratio, 7);
+          if (this.showHealthText) {
+            ctx.fillStyle = "#e2e8f0";
+            ctx.font = "700 10px ui-monospace, monospace";
+            ctx.textAlign = "center";
+            ctx.fillText(`${Math.ceil(hq.hp)}/${Math.round(hq.maxHp)}`, sx, sy - 4);
+            ctx.textAlign = "left";
+          }
         }
       }
     }
@@ -280,13 +351,20 @@ export class SpriteBattlefieldRenderer {
         ctx.font = "700 10px ui-sans-serif, system-ui, sans-serif";
         ctx.textAlign = "center";
         ctx.fillText(label, sx, sy);
-        ctx.textAlign = "left";
-        if (b.hp < b.maxHp && b.hp > 0) {
+        if (this.showHealthBars && b.hp > 0 && (b.hp < b.maxHp || (this.showHealthText && b.owner !== "neutral"))) {
+          const ratio = b.maxHp > 0 ? Math.max(0, b.hp / b.maxHp) : 0;
           ctx.fillStyle = "rgba(0,0,0,0.55)";
           ctx.fillRect(sx - 28, sy + 5, 56, 4);
-          ctx.fillStyle = b.owner === "allied" ? "#3b82f6" : b.owner === "enemy" ? "#ef4444" : "#94a3b8";
-          ctx.fillRect(sx - 28, sy + 5, 56 * (b.hp / b.maxHp), 4);
+          const defaultCol = b.owner === "allied" ? "#3b82f6" : b.owner === "enemy" ? "#ef4444" : "#94a3b8";
+          ctx.fillStyle = getHpColor(b.hp, b.maxHp, defaultCol);
+          ctx.fillRect(sx - 28, sy + 5, 56 * ratio, 4);
+          if (this.showHealthText) {
+            ctx.fillStyle = "#f1f5f9";
+            ctx.font = "700 9px ui-monospace, monospace";
+            ctx.fillText(`${Math.ceil(b.hp)}/${Math.round(b.maxHp)}`, sx, sy - 11);
+          }
         }
+        ctx.textAlign = "left";
       }
     }
 
@@ -319,6 +397,21 @@ export class SpriteBattlefieldRenderer {
       if (t.hp <= 0) continue;
       const th = unitHeightMap[t.kind] || 48;
       this.drawSprite(t.kind, t.x, 0, th, { team: t.team, flipX: t.dir < 0 }, w, groundScreenY);
+      const { sx, sy } = this.worldToScreen(t.x, th + 12, w, groundScreenY);
+      if (this.showHealthBars && this.showUnitHealthBars && sx > -80 && sx < w + 80) {
+        const ratio = t.maxHp > 0 ? Math.max(0, t.hp / t.maxHp) : 0;
+        ctx.fillStyle = "rgba(0,0,0,0.55)";
+        ctx.fillRect(sx - 24, sy, 48, 5);
+        ctx.fillStyle = getHpColor(t.hp, t.maxHp, "#ef4444");
+        ctx.fillRect(sx - 24, sy, 48 * ratio, 5);
+        if (this.showHealthText) {
+          ctx.fillStyle = "#f1f5f9";
+          ctx.font = "700 9px ui-monospace, monospace";
+          ctx.textAlign = "center";
+          ctx.fillText(`${Math.ceil(t.hp)}/${Math.round(t.maxHp)}`, sx, sy - 3);
+          ctx.textAlign = "left";
+        }
+      }
     }
 
     for (const u of state.units || []) {
@@ -339,7 +432,7 @@ export class SpriteBattlefieldRenderer {
       }
       if (u.kind === "supply_truck") {
         const { sx } = this.worldToScreen(u.x, 0, w, groundScreenY);
-        const auraR = 240 * this.camZoom;
+        const auraR = (UNIT_CONFIG.supply_truck.auraRadius ?? 240) * this.camZoom;
         if (sx > -auraR && sx < w + auraR) {
           ctx.fillStyle = "rgba(34, 197, 94, 0.12)";
           ctx.fillRect(sx - auraR, groundScreenY - 6 * this.camZoom, auraR * 2, 10 * this.camZoom);
@@ -349,13 +442,31 @@ export class SpriteBattlefieldRenderer {
         ? `inf_run_${(Math.floor(u.walkPhase || 0) % 4) + 1}`
         : u.kind;
       this.drawSprite(spriteKey, u.x, u.y || 0, uh, { team: u.team, flipX: u.dir < 0 }, w, groundScreenY);
-      if (u.kind === "ambulance" && u.passengers?.length > 0) {
-        const { sx, sy } = this.worldToScreen(u.x, uh + 10, w, groundScreenY);
-        if (sx > -80 && sx < w + 80) {
+      const { sx, sy } = this.worldToScreen(u.x, uh + 10, w, groundScreenY);
+      if (sx > -80 && sx < w + 80) {
+        const barW = u.kind === "infantry" ? 24 : 46;
+        if (this.showHealthBars && this.showUnitHealthBars) {
+          const ratio = u.maxHp > 0 ? Math.max(0, u.hp / u.maxHp) : 0;
+          ctx.fillStyle = "rgba(0,0,0,0.55)";
+          ctx.fillRect(sx - barW * 0.5, sy, barW, 4);
+          const defaultHpColor = u.hp < u.maxHp
+            ? (u.hp < u.maxHp * 0.35 ? "#ef4444" : "#f59e0b")
+            : (u.team === "allied" ? "#3b82f6" : "#ef4444");
+          ctx.fillStyle = getHpColor(u.hp, u.maxHp, defaultHpColor);
+          ctx.fillRect(sx - barW * 0.5, sy, barW * ratio, 4);
+          if (this.showHealthText) {
+            ctx.fillStyle = "#f1f5f9";
+            ctx.font = "700 9px ui-monospace, monospace";
+            ctx.textAlign = "center";
+            ctx.fillText(`${Math.ceil(u.hp)}/${Math.round(u.maxHp)}`, sx, sy - 4);
+            ctx.textAlign = "left";
+          }
+        }
+        if (u.kind === "ambulance" && u.passengers?.length > 0) {
           ctx.fillStyle = "#fde047";
           ctx.font = "800 10px ui-sans-serif, system-ui, sans-serif";
           ctx.textAlign = "center";
-          ctx.fillText(`+${u.passengers.length} CIV`, sx, sy - 4);
+          ctx.fillText(`+${u.passengers.length} CIV`, sx, sy - (this.showHealthBars && this.showHealthText ? 14 : 4));
           ctx.textAlign = "left";
         }
       }
@@ -412,18 +523,24 @@ export class SpriteBattlefieldRenderer {
         ctx.fillStyle = isLocal ? "#fde047" : player.team === "allied" ? "#93c5fd" : "#fca5a5";
         ctx.fillText(label, sx, sy);
 
-        if (!isLocal) {
+        if (!isLocal && this.showHealthBars) {
+          const ratio = player.maxHp > 0 ? Math.max(0, player.hp / player.maxHp) : 0;
           ctx.fillStyle = "rgba(0,0,0,0.55)";
           ctx.fillRect(sx - 22, sy + 4, 44, 4);
-          ctx.fillStyle = player.team === "allied" ? "#3b82f6" : "#ef4444";
-          ctx.fillRect(sx - 22, sy + 4, 44 * (player.hp / player.maxHp), 4);
-        } else if (player.aaWarningTicks > 0) {
+          ctx.fillStyle = getHpColor(player.hp, player.maxHp, player.team === "allied" ? "#3b82f6" : "#ef4444");
+          ctx.fillRect(sx - 22, sy + 4, 44 * ratio, 4);
+          if (this.showHealthText) {
+            ctx.fillStyle = "#f1f5f9";
+            ctx.font = "700 9px ui-monospace, monospace";
+            ctx.fillText(`${Math.ceil(player.hp)}/${Math.round(player.maxHp)}`, sx, sy - 11);
+          }
+        } else if (isLocal && player.aaWarningTicks > 0) {
           if (Math.floor(state.time * 8) % 2 === 0) {
             ctx.fillStyle = "#fb923c";
             ctx.font = "900 11px ui-sans-serif, system-ui, sans-serif";
             ctx.fillText("⚠ AA SAM — EVADE", sx, sy - 14);
           }
-        } else if (player.aircraftType === "p47" && !player.landedAtBase && player.flightStage >= 3) {
+        } else if (isLocal && player.aircraftType === "p47" && !player.landedAtBase && player.flightStage >= 3) {
           ctx.fillStyle = "#fbbf24";
           ctx.font = "900 11px ui-sans-serif, system-ui, sans-serif";
           ctx.fillText("⚠ STALL", sx, sy - 14);
@@ -457,11 +574,19 @@ export class SpriteBattlefieldRenderer {
       if (!b52.alive) continue;
       this.drawSprite("b52_bomber", b52.x, b52.y, RENDER_HEIGHTS.b52, { team: b52.team, flipX: b52.dir < 0, anchorBottom: false }, w, groundScreenY);
       const { sx, sy } = this.worldToScreen(b52.x, b52.y + 58, w, groundScreenY);
-      if (sx > -140 && sx < w + 140) {
+      if (this.showHealthBars && sx > -140 && sx < w + 140) {
+        const ratio = b52.maxHp > 0 ? Math.max(0, b52.hp / b52.maxHp) : 0;
         ctx.fillStyle = "rgba(0,0,0,0.6)";
         ctx.fillRect(sx - 40, sy, 80, 5);
-        ctx.fillStyle = b52.team === "allied" ? "#3b82f6" : "#ef4444";
-        ctx.fillRect(sx - 40, sy, 80 * (b52.hp / b52.maxHp), 5);
+        ctx.fillStyle = getHpColor(b52.hp, b52.maxHp, b52.team === "allied" ? "#3b82f6" : "#ef4444");
+        ctx.fillRect(sx - 40, sy, 80 * ratio, 5);
+        if (this.showHealthText) {
+          ctx.fillStyle = "#f1f5f9";
+          ctx.font = "700 9px ui-monospace, monospace";
+          ctx.textAlign = "center";
+          ctx.fillText(`${Math.ceil(b52.hp)}/${Math.round(b52.maxHp)}`, sx, sy - 4);
+          ctx.textAlign = "left";
+        }
       }
     }
 

@@ -9,6 +9,7 @@ import {
   configureMatch,
   createInitialState,
   createNetworkSnapshot,
+  getGroundConfigSnapshot,
   handlePlayerRequisition,
   handlePlayerUtility,
   launchSpecialWeapon,
@@ -22,6 +23,7 @@ import {
   stepSimulation,
   swapPlayerAircraft,
   syncBotPlayers,
+  updateGroundConfig,
   updateP47Config
 } from "../shared/simulation.mjs";
 
@@ -143,10 +145,86 @@ function persistP47ConfigToFile(config) {
   }
 }
 
+function applyBlockPrimitives(block, obj) {
+  let out = block;
+  for (const [key, val] of Object.entries(obj || {})) {
+    if (typeof val === "number" && Number.isFinite(val)) {
+      const re = new RegExp(`^(\\s*${key}:\\s*)(-?\\d+(?:\\.\\d+)?)`, "m");
+      out = out.replace(re, `$1${val}`);
+    } else if (typeof val === "boolean") {
+      const re = new RegExp(`^(\\s*${key}:\\s*)(true|false)`, "m");
+      out = out.replace(re, `$1${val}`);
+    } else if (key === "samSpeeds" && val && typeof val === "object") {
+      const { slow, medium, fast } = val;
+      if ([slow, medium, fast].every((n) => typeof n === "number" && Number.isFinite(n))) {
+        out = out.replace(
+          /^(\s*samSpeeds:\s*)\{[^}]*\}/m,
+          `$1{ slow: ${slow}, medium: ${medium}, fast: ${fast} }`
+        );
+      }
+    }
+  }
+  return out;
+}
+
+function replaceSourceBlock(src, startToken, endToken, transform) {
+  const startIdx = src.indexOf(startToken);
+  if (startIdx === -1) return src;
+  const endIdx = src.indexOf(endToken, startIdx + startToken.length);
+  if (endIdx === -1) return src;
+  const block = src.slice(startIdx, endIdx + endToken.length);
+  const nextBlock = transform(block);
+  return src.slice(0, startIdx) + nextBlock + src.slice(endIdx + endToken.length);
+}
+
+function persistGroundConfigToFile(config) {
+  try {
+    const constantsPath = path.join(SHARED_DIR, "constants.mjs");
+    const src = fs.readFileSync(constantsPath, "utf8");
+    let nextSrc = src;
+
+    if (config.behavior) {
+      nextSrc = replaceSourceBlock(nextSrc, "export const GROUND_BEHAVIOR_CONFIG = {\n", "\n};", (block) =>
+        applyBlockPrimitives(block, config.behavior)
+      );
+    }
+
+    if (config.units) {
+      nextSrc = replaceSourceBlock(nextSrc, "export const UNIT_CONFIG = {\n", "\n};", (unitSection) => {
+        let out = unitSection;
+        for (const [unitId, unitCfg] of Object.entries(config.units)) {
+          out = replaceSourceBlock(out, `  ${unitId}: {\n`, "\n  }", (sub) =>
+            applyBlockPrimitives(sub, unitCfg)
+          );
+        }
+        return out;
+      });
+    }
+
+    if (config.bunker) {
+      nextSrc = replaceSourceBlock(nextSrc, "export const DEFENSE_CONFIG = {\n", "\n};", (defSection) =>
+        replaceSourceBlock(defSection, "  bunker: {\n", "\n  }", (sub) =>
+          applyBlockPrimitives(sub, config.bunker)
+        )
+      );
+    }
+
+    if (nextSrc !== src) {
+      fs.writeFileSync(constantsPath, nextSrc, "utf8");
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function resolveStaticPath(urlPath) {
   const cleanUrl = decodeURIComponent(urlPath.split("?")[0]);
   if (cleanUrl === "/flight-lab" || cleanUrl === "/flight-lab/") {
     return path.join(PUBLIC_DIR, "flight-lab.html");
+  }
+  if (cleanUrl === "/ground-lab" || cleanUrl === "/ground-lab/") {
+    return path.join(PUBLIC_DIR, "ground-lab.html");
   }
   if (cleanUrl.startsWith("/shared/")) {
     const rel = path.normalize(cleanUrl.slice("/shared/".length)).replace(/^(\.\.[/\\])+/, "");
@@ -272,7 +350,8 @@ function attachClientToRoom(client, targetRoom, choice = {}) {
       roomId: targetRoom.id,
       state: createNetworkSnapshot(targetRoom.state),
       rooms: getRoomsSummary(),
-      p47Config: { ...AIRCRAFT_CONFIG.p47 }
+      p47Config: { ...AIRCRAFT_CONFIG.p47 },
+      groundConfig: getGroundConfigSnapshot()
     })));
   }
   broadcastRoomSnapshot(targetRoom);
@@ -323,13 +402,14 @@ server.on("upgrade", (req, socket) => {
   const playerId = `p${playerSeq++}`;
   const reqUrl = new URL(req.url || "/ws", "http://localhost");
   const referer = String(req.headers.referer || "");
-  const isTunerOnly = referer.includes("/flight-lab") || reqUrl.searchParams.get("tuner") === "1";
+  const isTunerOnly = referer.includes("/flight-lab") || referer.includes("/ground-lab") || reqUrl.searchParams.get("tuner") === "1";
   const client = { id: playerId, socket, room: null, tunerOnly: isTunerOnly, team: "allied", callsign: playerId.toUpperCase(), input: {} };
   allClients.set(playerId, client);
 
   if (isTunerOnly) {
     if (!socket.destroyed) {
       socket.write(encodeWsFrame(JSON.stringify({ type: "p47Config", config: { ...AIRCRAFT_CONFIG.p47 } })));
+      socket.write(encodeWsFrame(JSON.stringify({ type: "groundConfig", config: getGroundConfigSnapshot() })));
     }
   } else {
     const initialRoom = getOrCreateRoom(reqUrl.searchParams.get("room") || "ALPHA");
@@ -363,6 +443,18 @@ server.on("upgrade", (req, socket) => {
               persistP47ConfigToFile(config);
             }
             const frame = encodeWsFrame(JSON.stringify({ type: "p47Config", config }));
+            for (const c of allClients.values()) {
+              if (!c.socket.destroyed) c.socket.write(frame);
+            }
+            continue;
+          }
+
+          if (cmd.type === "updateGroundConfig" && cmd.patch) {
+            const config = updateGroundConfig(cmd.patch);
+            if (cmd.persist === true) {
+              persistGroundConfigToFile(config);
+            }
+            const frame = encodeWsFrame(JSON.stringify({ type: "groundConfig", config }));
             for (const c of allClients.values()) {
               if (!c.socket.destroyed) c.socket.write(frame);
             }

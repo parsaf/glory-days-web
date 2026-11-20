@@ -15,6 +15,7 @@ import {
   stepSimulation,
   swapPlayerAircraft,
   syncBotPlayers,
+  updateGroundConfig,
   updateP47Config
 } from "../../shared/simulation.mjs";
 import { BattlefieldAudio } from "./audio.mjs";
@@ -30,6 +31,8 @@ const audio = new BattlefieldAudio();
 try {
   const saved = localStorage.getItem("glory_days_p47_config_v2");
   if (saved) updateP47Config(JSON.parse(saved));
+  const savedGround = localStorage.getItem("glory_days_ground_config_v1");
+  if (savedGround) updateGroundConfig(JSON.parse(savedGround));
 } catch {
   // Ignore invalid or inaccessible storage
 }
@@ -355,9 +358,14 @@ function connectWebSocket() {
         if (data.p47Config) {
           updateP47Config(data.p47Config);
         }
+        if (data.groundConfig) {
+          updateGroundConfig(data.groundConfig);
+        }
         hud.setNetStatus(`ONLINE (${data.roomId || "ALPHA"} • ${data.team.toUpperCase()})`, "#22c55e");
       } else if (data.type === "p47Config") {
         updateP47Config(data.config);
+      } else if (data.type === "groundConfig") {
+        updateGroundConfig(data.config);
       } else if (data.type === "snapshot") {
         if (Array.isArray(data.rooms)) roomsList = data.rooms;
         state = reconcileClientState(state, data.state, localPlayerId);

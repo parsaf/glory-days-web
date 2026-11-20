@@ -535,11 +535,15 @@
       color: #e2e8f0;
     }
 
-    #flight-lab-link {
+    #lab-links {
       position: absolute;
       top: 52px;
       right: 12px;
       z-index: 20;
+      display: flex;
+      gap: 6px;
+    }
+    #flight-lab-link, #ground-lab-link {
       background: rgba(15, 23, 42, 0.88);
       border: 1px solid rgba(56, 189, 248, 0.55);
       color: #7dd3fc;
@@ -552,10 +556,19 @@
       backdrop-filter: blur(6px);
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
     }
+    #ground-lab-link {
+      border-color: rgba(34, 197, 94, 0.55);
+      color: #86efac;
+    }
     #flight-lab-link:hover {
       background: rgba(30, 41, 59, 0.96);
       color: #e0f2fe;
       border-color: #38bdf8;
+    }
+    #ground-lab-link:hover {
+      background: rgba(30, 41, 59, 0.96);
+      color: #dcfce7;
+      border-color: #22c55e;
     }
   </style>
 </head>
@@ -603,7 +616,10 @@
         </div>
       </div>
 
-      <a id="flight-lab-link" href="/flight-lab" target="_blank" rel="noopener" title="Open Standalone P-47 Physics Test Gym in New Tab">P-47 FLIGHT LAB ↗</a>
+      <div id="lab-links">
+        <a id="ground-lab-link" href="/ground-lab" target="_blank" rel="noopener" title="Open Standalone Ground Troops Test Lab in New Tab">GROUND LAB ↗</a>
+        <a id="flight-lab-link" href="/flight-lab" target="_blank" rel="noopener" title="Open Standalone P-47 Physics Test Gym in New Tab">P-47 FLIGHT LAB ↗</a>
+      </div>
 
       <div id="base-banner">LANDED ON BASE PAD — REPAIRING &amp; REARMING • PRESS <span class="kbd">Q</span> → <span class="kbd">0</span> TO SWAP AIRCRAFT • <span class="kbd">E</span> / <span class="kbd">↓</span> LOAD/DROP TROOPS</div>
 
