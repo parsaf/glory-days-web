@@ -2397,3 +2397,376 @@ test("Ground Troops Lab tunable rules, compact arena bounds, and dummy flags con
     updateGroundConfig({ reset: true });
   }
 });
+
+test("Heli Bot AI: aggressive frontline gunship strafes MBT/bunker, ignores deep bunker, and captures neutralized bunker", () => {
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const heli = addPlayer(state, "bot_allied_1", "allied", "heli", { isBot: true });
+  heli.x = -900;
+  heli.y = 110;
+  heli.landedAtBase = false;
+
+  const frontMbt = spawnGroundUnit(state, "enemy", "mbt", -200);
+  const frontBunker = state.bunkers[2]; // x = 0
+  frontBunker.owner = "enemy";
+  frontBunker.passiveDummy = true;
+  const deepBunker = state.bunkers[4]; // x = 3600
+  deepBunker.owner = "enemy";
+  deepBunker.passiveDummy = true;
+
+  let mbtDestroyed = false;
+  let bunkerCaptured = false;
+  for (let t = 0; t < 750; t++) {
+    stepSimulation(state, {});
+    if (frontMbt.hp <= 0) mbtDestroyed = true;
+    if (frontBunker.owner === "allied") bunkerCaptured = true;
+    if (mbtDestroyed && bunkerCaptured) break;
+  }
+
+  assert.equal(mbtDestroyed, true, "Heli bot aligns pitch and destroys frontline MBT via gunship strafing");
+  assert.equal(bunkerCaptured, true, "Heli bot breaks frontline bunker and drops paratrooper to capture it");
+  assert.equal(deepBunker.hp, deepBunker.maxHp, "Deep rear bunker (x=3600) stays untouched while frontline targets exist");
+});
+
+test("Heli Bot AI: shifts to air combat within visual range, respects frontline leash, and only chases <=20% HP targets nearby", () => {
+  // 1. Visual range focus shift away from ground MBT onto nearby enemy aircraft
+  const s1 = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const h1 = addPlayer(s1, "bot_allied_1", "allied", "heli", { isBot: true });
+  h1.x = -400;
+  h1.y = 120;
+  h1.landedAtBase = false;
+  h1.passengers = [];
+  const frontMbt = spawnGroundUnit(s1, "enemy", "mbt", 0);
+  frontMbt.holdPosition = true;
+  frontMbt.passiveDummy = true;
+
+  const enemyAir = addPlayer(s1, "enemy_p1", "enemy", "p47", { isBot: false });
+  enemyAir.x = 300;
+  enemyAir.y = 180;
+  enemyAir.vx = -280;
+  enemyAir.speed = 280;
+  enemyAir.landedAtBase = false;
+
+  let airShots = 0;
+  for (let t = 0; t < 70; t++) {
+    stepSimulation(s1, { enemy_p1: { left: true } });
+    if (s1.events.some((e) => e.type === "primary_fired" && e.playerId === h1.id)) airShots += 1;
+  }
+  assert.equal(h1.botAi?.mode, "air_combat", "Heli shifts focus from ground MBT to airborne enemy within visual range");
+  assert.ok(airShots > 0, "Heli fires on incoming enemy aircraft");
+
+  // 2. Healthy enemy heli far behind frontline (x=1800 vs frontline=0) is NOT chased
+  const s2 = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const h2 = addPlayer(s2, "bot_allied_1", "allied", "heli", { isBot: true });
+  h2.x = -200;
+  h2.y = 120;
+  h2.landedAtBase = false;
+  h2.passengers = [];
+  const fMbt2 = spawnGroundUnit(s2, "enemy", "mbt", 0);
+  fMbt2.holdPosition = true;
+  fMbt2.passiveDummy = true;
+
+  const healthyEnemyHeli = addPlayer(s2, "enemy_h", "enemy", "heli", { isBot: false });
+  healthyEnemyHeli.x = 1800;
+  healthyEnemyHeli.y = 140;
+  healthyEnemyHeli.landedAtBase = false;
+  computeBotPilotInput(s2, h2);
+  assert.notEqual(h2.botAi?.mode, "air_combat", "Does not chase healthy enemy aircraft far behind enemy frontline");
+
+  // 3. <= 20% HP enemy heli close behind frontline IS pursued for the kill
+  healthyEnemyHeli.hp = healthyEnemyHeli.maxHp * 0.15;
+  healthyEnemyHeli.x = 1000;
+  h2.x = 650;
+  computeBotPilotInput(s2, h2);
+  assert.equal(h2.botAi?.mode, "air_combat", "Pursues <=20% HP enemy aircraft when reasonably close behind frontline");
+
+  // 4. <= 20% HP enemy too far behind (horizGap > maxGap) or near enemy HQ is NOT chased
+  healthyEnemyHeli.x = 1600;
+  h2.x = 650;
+  computeBotPilotInput(s2, h2);
+  assert.notEqual(h2.botAi?.mode, "air_combat", "Aborts <=20% HP pursuit when horizontal gap is too large");
+
+  healthyEnemyHeli.x = 4600;
+  h2.x = 4200;
+  computeBotPilotInput(s2, h2);
+  assert.notEqual(h2.botAi?.mode, "air_combat", "Never chases enemy aircraft into enemy HQ defenses");
+});
+
+test("Heli Bot AI: strategic RTB waits for full missile reload when safe, fights through aerial battle if empty, and retreats on low HP", () => {
+  // 1. Out of missiles with no air threats -> returns to base, lands, reloads to maxSecondary, then lifts off
+  const s1 = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const h1 = addPlayer(s1, "bot_allied_1", "allied", "heli", { isBot: true });
+  h1.x = BASES.allied.padCenterX + 350;
+  h1.y = 95;
+  h1.secondaryAmmo = 0;
+  h1.landedAtBase = false;
+  h1.passengers = [];
+
+  let sawRtb = false;
+  let sawFullReloadOnPad = false;
+  let liftedOffAfterReload = false;
+  for (let t = 0; t < 600; t++) {
+    stepSimulation(s1, {});
+    if (h1.botAi?.mode === "rtb") sawRtb = true;
+    if (h1.landedAtBase && h1.secondaryAmmo === h1.maxSecondary) sawFullReloadOnPad = true;
+    if (sawFullReloadOnPad && !h1.landedAtBase && h1.y > 10) {
+      liftedOffAfterReload = true;
+      break;
+    }
+  }
+  assert.equal(sawRtb, true, "Heli enters RTB when missiles are depleted and airspace is safe");
+  assert.equal(sawFullReloadOnPad, true, "Heli waits on base pad until secondary missiles finish reloading");
+  assert.equal(liftedOffAfterReload, true, "Heli lifts off once fully rearmed");
+
+  // 2. Out of missiles DURING an aerial battle -> stays fighting with primary cannon instead of fleeing
+  const s2 = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const h2 = addPlayer(s2, "bot_allied_1", "allied", "heli", { isBot: true });
+  h2.x = -200;
+  h2.y = 140;
+  h2.secondaryAmmo = 0;
+  h2.landedAtBase = false;
+  h2.passengers = [];
+  const enemyHeli = addPlayer(s2, "enemy_h", "enemy", "heli", { isBot: false });
+  enemyHeli.x = 250;
+  enemyHeli.y = 140;
+  enemyHeli.landedAtBase = false;
+
+  computeBotPilotInput(s2, h2);
+  assert.equal(h2.botAi?.mode, "air_combat", "Does not turn tail for ammo reload in the middle of an aerial battle");
+
+  // 3. Low HP (<= 35%) overrides combat and retreats to base even with enemy aircraft nearby
+  h2.hp = h2.maxHp * 0.25;
+  const rtbInp = computeBotPilotInput(s2, h2);
+  assert.equal(h2.botAi?.mode, "rtb", "Retreats immediately when HP drops below 35% threshold");
+  assert.equal(h2.botAi?.rtbReason, "hp");
+  assert.equal(rtbInp.left, true, "Allied heli flies left toward home pad during low-HP retreat");
+});
+
+test("Heli Bot AI: detects incoming SAM threats, executes valid evasive patterns, and avoids ground impact", () => {
+  // 1. Mid-altitude incoming SAM triggers evasion and misses
+  const s1 = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const h1 = addPlayer(s1, "bot_allied_1", "allied", "heli", { isBot: true });
+  h1.x = -500;
+  h1.y = 140;
+  h1.vx = 180;
+  h1.landedAtBase = false;
+  h1.passengers = [];
+
+  s1.projectiles.push({
+    id: "proj_test_sam",
+    kind: "sam_missile",
+    guided: false,
+    team: "enemy",
+    x: -100,
+    y: 40,
+    vx: -520,
+    vy: 190,
+    speed: 554,
+    damage: 65,
+    lifeTicks: 150
+  });
+
+  let sawEvade = false;
+  let pattern = "none";
+  let minY = h1.y;
+  for (let t = 0; t < 90; t++) {
+    stepSimulation(s1, {});
+    if (h1.botAi?.mode === "evade") {
+      sawEvade = true;
+      if (h1.botAi.evadePattern !== "none") pattern = h1.botAi.evadePattern;
+    }
+    if (h1.y < minY) minY = h1.y;
+  }
+  assert.equal(sawEvade, true, "Heli enters evade mode when threatened by incoming SAM");
+  assert.ok(["drop", "climb", "break_turn"].includes(pattern), `Executed valid evade pattern (${pattern})`);
+  assert.ok(minY >= 38, `Heli stays safely above ground during evasion (minY=${minY.toFixed(1)})`);
+  assert.equal(h1.hp, h1.maxHp, "Evasive maneuver causes unguided SAM to miss");
+
+  // 2. Low-altitude threat (y=70) never selects 'drop'
+  const s2 = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const h2 = addPlayer(s2, "bot_allied_1", "allied", "heli", { isBot: true });
+  h2.x = -500;
+  h2.y = 70;
+  h2.vx = 140;
+  h2.landedAtBase = false;
+  h2.passengers = [];
+  s2.projectiles.push({
+    id: "proj_test_sam_low",
+    kind: "sam_missile",
+    guided: false,
+    team: "enemy",
+    x: -140,
+    y: 34,
+    vx: -480,
+    vy: 80,
+    speed: 486,
+    damage: 65,
+    lifeTicks: 150
+  });
+  computeBotPilotInput(s2, h2);
+  assert.equal(h2.botAi?.mode, "evade");
+  assert.notEqual(h2.botAi?.evadePattern, "drop", "Low-altitude heli climbs or break-turns instead of diving into ground");
+});
+
+test("Heli Bot AI: holds fire when civilian blocks line of fire and rescues safe civilians opportunistically", () => {
+  // 1. Civilian directly between heli and enemy MBT -> holds fire until clear
+  const s1 = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const h1 = addPlayer(s1, "bot_allied_1", "allied", "heli", { isBot: true });
+  h1.x = -650;
+  h1.y = 95;
+  h1.vx = 220;
+  h1.pitch = -0.18;
+  h1.landedAtBase = false;
+  h1.passengers = [];
+
+  const mbt = spawnGroundUnit(s1, "enemy", "mbt", -150);
+  mbt.holdPosition = true;
+  mbt.passiveDummy = true;
+  spawnCivilian(s1, -180, -180);
+
+  const inp = computeBotPilotInput(s1, h1);
+  assert.equal(inp.firePrimary, false, "Holds primary fire when a civilian is in the line of fire");
+  assert.equal(inp.fireSecondary, false, "Holds secondary missile when a civilian is in the line of fire");
+
+  // 2. Opportunistic rescue of a safe nearby civilian when no urgent threat is present
+  const s2 = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const h2 = addPlayer(s2, "bot_allied_1", "allied", "heli", { isBot: true });
+  h2.x = -1200;
+  h2.y = 110;
+  h2.landedAtBase = false;
+  h2.passengers = [];
+  spawnCivilian(s2, -800, -800);
+
+  let boarded = false;
+  for (let t = 0; t < 360; t++) {
+    stepSimulation(s2, {});
+    if (s2.events.some((e) => e.type === "civilian_boarded" && e.extractorId === h2.id)) {
+      boarded = true;
+      break;
+    }
+  }
+  assert.equal(boarded, true, "Heli opportunistically descends to rescue safe nearby civilian");
+});
+
+test("Heli Bot AI: against oncoming P-47, avoids deer-in-headlights hover, executes offset pass-through, and turns onto tail", () => {
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const heli = addPlayer(state, "bot_allied_1", "allied", "heli", { isBot: true });
+  heli.x = -500;
+  heli.y = 160;
+  heli.vx = 200;
+  heli.landedAtBase = false;
+  heli.passengers = [];
+
+  const p47 = addPlayer(state, "enemy_p47", "enemy", "p47", { isBot: false });
+  p47.x = 250;
+  p47.y = 160;
+  p47.vx = -380;
+  p47.speed = 380;
+  p47.dir = -1;
+  p47.landedAtBase = false;
+
+  const tactics = new Set();
+  let maxMergeVx = 0;
+  let maxVertOffset = 0;
+  let passedEnemy = false;
+  let turnedOntoTail = false;
+
+  for (let t = 0; t < 180; t++) {
+    stepSimulation(state, { enemy_p47: { left: true } });
+    if (heli.botAi?.airTactic && heli.botAi.airTactic !== "none") {
+      tactics.add(heli.botAi.airTactic);
+    }
+    if (heli.x < p47.x) {
+      maxMergeVx = Math.max(maxMergeVx, Math.abs(heli.vx));
+      maxVertOffset = Math.max(maxVertOffset, Math.abs(heli.y - p47.y));
+    } else {
+      passedEnemy = true;
+      if (heli.dir === -1) turnedOntoTail = true;
+    }
+  }
+
+  assert.ok(
+    tactics.has("slash_pass") || tactics.has("under_cut"),
+    `Expected pass-through tactic against oncoming P-47, saw [${[...tactics].join(",")}]`
+  );
+  assert.ok(maxMergeVx > 140, `Expected high-speed merge instead of hovering (maxMergeVx=${maxMergeVx.toFixed(1)})`);
+  assert.ok(maxVertOffset >= 35, `Expected vertical offset off P-47 nose during merge (maxVertOffset=${maxVertOffset.toFixed(1)})`);
+  assert.equal(passedEnemy, true, "Heli flew past oncoming P-47 instead of stopping in front of it");
+  assert.equal(turnedOntoTail, true, "Heli reversed after pass-through to re-engage P-47 tail");
+});
+
+test("Heli Bot AI: heli-vs-heli engagement uses active maneuvering rather than static standoff hover", () => {
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const a = addPlayer(state, "bot_allied_1", "allied", "heli", { isBot: true });
+  const e = addPlayer(state, "bot_enemy_1", "enemy", "heli", { isBot: true });
+  a.x = -450;
+  a.y = 150;
+  a.vx = 220;
+  a.landedAtBase = false;
+  a.passengers = [];
+  e.x = 450;
+  e.y = 150;
+  e.vx = -220;
+  e.landedAtBase = false;
+  e.passengers = [];
+
+  const tactics = new Set();
+  let minHorizDist = Infinity;
+  let airCombatTicks = 0;
+  let speedSum = 0;
+
+  for (let t = 0; t < 240; t++) {
+    stepSimulation(state, {});
+    if (a.alive && e.alive) {
+      minHorizDist = Math.min(minHorizDist, Math.abs(a.x - e.x));
+    }
+    if (a.alive && a.botAi?.mode === "air_combat") {
+      airCombatTicks += 1;
+      speedSum += Math.abs(a.vx);
+      if (a.botAi.airTactic && a.botAi.airTactic !== "none") tactics.add(a.botAi.airTactic);
+    }
+  }
+
+  const avgSpeed = speedSum / Math.max(1, airCombatTicks);
+  assert.ok(tactics.size > 0, "Selected dynamic air-combat tactics");
+  assert.ok(minHorizDist < 260, `Expected helis to close/cross dynamically instead of camping at arm's length (minHorizDist=${minHorizDist.toFixed(1)})`);
+  assert.ok(avgSpeed > 90, `Expected active horizontal maneuvering in air_combat (avgSpeed=${avgSpeed.toFixed(1)})`);
+});
+
+test("Heli Bot AI: exhibits human-like reaction delay and tracking variance instead of instant elevation mirroring", () => {
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const bot = addPlayer(state, "bot_allied_1", "allied", "heli", { isBot: true });
+  bot.x = -500;
+  bot.y = 150;
+  bot.landedAtBase = false;
+  bot.passengers = [];
+
+  const human = addPlayer(state, "enemy_human", "enemy", "heli", { isBot: false });
+  human.x = 180;
+  human.y = 150;
+  human.hp = 5000;
+  human.maxHp = 5000;
+  human.landedAtBase = false;
+
+  // Let perception stabilize on steady enemy
+  for (let t = 0; t < 45; t++) {
+    stepSimulation(state, { enemy_human: {} });
+  }
+  const trackedBefore = bot.botAi.trackedAirY;
+
+  // Human snaps upward for 45 ticks
+  let trackedAt5 = trackedBefore;
+  for (let t = 0; t < 45; t++) {
+    stepSimulation(state, { enemy_human: { up: true } });
+    if (t === 4) trackedAt5 = bot.botAi.trackedAirY;
+  }
+
+  assert.ok(
+    Math.abs(trackedAt5 - trackedBefore) < 12,
+    `Expected delayed perception at 5 ticks after climb start (delta=${(trackedAt5 - trackedBefore).toFixed(1)})`
+  );
+  assert.ok(
+    bot.botAi.trackedAirY - trackedBefore > 35,
+    `Expected tracked elevation to catch up by tick 45 (delta=${(bot.botAi.trackedAirY - trackedBefore).toFixed(1)})`
+  );
+  assert.notEqual(bot.botAi.aimWanderY, 0, "Tracking variance (aimWanderY) is active");
+});

@@ -116,6 +116,68 @@ export const AIRCRAFT_CONFIG = {
 
 export const DEFAULT_P47_CONFIG = Object.freeze({ ...AIRCRAFT_CONFIG.p47 });
 
+export const HELI_BOT_CONFIG = {
+  // Air combat & pursuit
+  airVisualRange: 950,            // Slant range to shift focus onto enemy aircraft
+  airEngageHysteresisRange: 1150, // Keep tracking engaged air target slightly past visual range
+  airMaxBehindFront: 800,         // Normal max distance behind frontline to chase healthy air targets
+  airPursuitHpRatio: 0.20,        // Only pursue deep behind frontline if enemy HP <= 20%
+  airPursuitMaxBehindFront: 1700, // Hard cap behind frontline even for <= 20% HP pursuit
+  airPursuitMaxGap: 640,          // Max horizontal gap to chase a <= 20% HP enemy heli
+  airPursuitMaxGapFastP47: 420,   // Max horizontal gap if chasing a fast-fleeing P-47 (vx > 290)
+  enemyHqNoChaseDist: 1100,       // Never chase enemy aircraft into enemy HQ area
+  aerialBattleRange: 850,         // Slant range defining active aerial battle (blocks ammo-only RTB)
+  dogfightMinStandoff: 200,       // Preferred minimum horizontal distance in air combat
+  dogfightMaxStandoff: 400,       // Preferred maximum horizontal distance in air combat
+
+  // Strategic RTB & refit
+  lowHpRetreatRatio: 0.35,        // Retreat even during combat when HP <= 35%
+  pursuitMinHpRatio: 0.40,        // Do not pursue deep kills if own HP < 40%
+  baseReadyHpRatio: 0.92,         // Repair threshold on pad before takeoff
+  scrambleEnemyDist: 550,         // Scramble off pad early if enemy aircraft is right overhead
+
+  // Frontline ground attack & bunker breaking
+  groundMaxBehindFront: 1800,     // Focus on enemy frontline echelon
+  bunkerMaxBehindFront: 2000,     // Break frontline bunkers & immediate support bunker, not deep rear
+  strafeBreakDist: 135,           // Close-in distance to break off a gunship strafing pass
+  strafeStandoffDist: 480,        // Pull-back distance on friendly side before re-attacking
+  minCombatY: 52,                 // Stay above horizontal MBT/howitzer/infantry fire (y <= 38)
+  maxCombatY: 175,                // Ceiling for ground strafe alignment
+
+  // Opportunistic transport & rescue
+  bunkerDetourMaxDist: 1300,      // Max distance for opportunistic bunker capture detour
+  bunkerAaDangerDist: 500,        // Avoid capturing a bunker guarded by an AA truck within this range
+  civDetourMaxDist: 950,          // Max distance for opportunistic civilian rescue detour
+  civReturnDetourMaxDist: 420,    // Scoop safe civilian along return-to-base route
+  civEnemyDangerDist: 520,        // Don't land for civilian if enemy ground combat unit is this close
+  civAmbulanceClaimDist: 220,     // Let nearby friendly ambulance with cabin space handle it
+
+  // Threat evasion
+  evadeLookaheadSec: 1.35,        // Projectile CPA lookahead window
+  evadeDangerRadius: 82,          // CPA threshold to trigger evasion
+  evadeDropTicks: 32,             // Duration of dive/drop maneuver (~0.53s)
+  evadeClimbTicks: 32,            // Duration of pop-up/climb maneuver (~0.53s)
+  evadeBreakTurnTicks: 42,        // Duration of break-turn away from threat (~0.70s)
+  evadeCooldownTicks: 18,         // Brief cooldown after maneuver unless imminent hit (< 0.45s)
+  evadeFloorY: 48,                // Never dive below this altitude during evasion
+
+  // Dynamic air-to-air tactics & humanization
+  airPassThroughDist: 165,        // Base distance to fly past target before turning to re-engage
+  airSlashOffsetY: 72,            // Altitude above target for high-speed downward nose-rake slash
+  airUndercutOffsetY: 85,         // Altitude below target for defensive slip-under pass
+  airWeaveAmpY: 58,               // Vertical weave amplitude during press_weave
+  airPressMinRange: 170,          // Close-in press range during aggressive dogfighting
+  airPressMaxRange: 340,          // Outer press range before surging closer
+  airReactionMinTicks: 6,         // Min visual perception sample interval (~100ms)
+  airReactionMaxTicks: 10,        // Max visual perception sample interval (~167ms)
+  airAimWanderMaxY: 26,           // Max gentle vertical tracking imperfection (±px)
+  airFireReactMinTicks: 3,        // Min trigger reaction delay on newly lined-up air target (~50ms)
+  airFireReactMaxTicks: 7,        // Max trigger reaction delay (~117ms)
+  airMissileReactBonusTicks: 3,   // Extra hesitation before launching air-to-air missiles
+  airTacticMinTicks: 55,          // Min commitment to a chosen dogfight tactic (~0.9s)
+  airTacticMaxTicks: 120          // Max commitment before re-scoring tactics (~2.0s)
+};
+
 export const P47_TUNING_SCHEMA = [
   {
     group: "Speed, Thrust, Cruise & Opposite Braking",
