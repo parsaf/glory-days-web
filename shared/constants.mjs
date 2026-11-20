@@ -225,6 +225,29 @@ export const AMBULANCE_CROSSFIRE_RATIO = 0.5;
 export const GROUND_DAMAGE_MIN_SPEED_FACTOR = 0.45;
 export const GROUND_DAMAGE_MAX_COOLDOWN_MULT = 2.0;
 
+export const GROUND_BEHAVIOR_CONFIG = {
+  damageDegradationEnabled: true,
+  minDamagedSpeedFactor: 0.45,
+  maxDamagedCooldownMult: 2.0,
+  damagedAaSlowOnly: true,
+  supplyReloadBoost: true,
+  ambulanceTargetable: false,
+  ambulanceCrossfireRatio: 0.5,
+  rearHitMultiplier: 1.75
+};
+
+export const DEFAULT_GROUND_BEHAVIOR_CONFIG = Object.freeze({ ...GROUND_BEHAVIOR_CONFIG });
+
+export const GROUND_UNIT_ORDER = [
+  "infantry",
+  "aa_truck",
+  "apc",
+  "mbt",
+  "howitzer",
+  "ambulance",
+  "supply_truck"
+];
+
 // Phase 2 Ground Unit Configurations
 export const UNIT_CONFIG = {
   infantry: {
@@ -340,6 +363,18 @@ export const UNIT_CONFIG = {
   }
 };
 
+export const DEFAULT_UNIT_CONFIG = Object.freeze(
+  Object.fromEntries(
+    Object.entries(UNIT_CONFIG).map(([key, cfg]) => [
+      key,
+      Object.freeze({
+        ...cfg,
+        ...(cfg.samSpeeds ? { samSpeeds: Object.freeze({ ...cfg.samSpeeds }) } : {})
+      })
+    ])
+  )
+);
+
 // Phase 2 Strategic Call-Ins
 export const STRATEGIC_CONFIG = {
   b52_raid: {
@@ -390,6 +425,176 @@ export const DEFENSE_CONFIG = {
     samSpeed: 470
   }
 };
+
+export const DEFAULT_BUNKER_CONFIG = Object.freeze({ ...DEFENSE_CONFIG.bunker });
+
+export const GROUND_UNIT_TUNING_SCHEMA = {
+  infantry: [
+    {
+      group: "Survivability & Mobility",
+      items: [
+        { key: "maxHp", label: "Max Health", min: 10, max: 300, step: 5, unit: "HP", desc: "Total squad hit points before elimination." },
+        { key: "speed", label: "March Speed", min: 10, max: 180, step: 2, unit: "px/s", desc: "Forward advance speed when no enemy target is in range." },
+        { key: "cost", label: "Requisition Cost", min: 10, max: 500, step: 5, unit: "$", desc: "War funds required to deploy an Infantry Squad." },
+        { key: "canCaptureBunker", kind: "checkbox", label: "Can Capture Neutral Bunkers", desc: "When enabled, infantry capture neutral/0-HP bunkers on contact." }
+      ]
+    },
+    {
+      group: "Rifle Combat & Rate of Fire",
+      items: [
+        { key: "range", label: "Engagement Range", min: 60, max: 600, step: 10, unit: "m", desc: "Forward standoff distance where infantry halt to fire." },
+        { key: "damage", label: "Damage Dealt", min: 1, max: 80, step: 1, unit: "dmg", desc: "Damage inflicted per rifle shot." },
+        { key: "fireCooldownTicks", kind: "rate", label: "Rate of Fire", min: 0.3, max: 12, step: 0.1, unit: "shots/s", desc: "Rifle firing cadence (converted internally to 60 Hz cooldown ticks)." },
+        { key: "projSpeed", label: "Bullet Speed", min: 200, max: 1400, step: 20, unit: "px/s", desc: "Muzzle velocity of infantry rounds." }
+      ]
+    }
+  ],
+  aa_truck: [
+    {
+      group: "Chassis & Economy",
+      items: [
+        { key: "maxHp", label: "Max Health", min: 20, max: 600, step: 10, unit: "HP", desc: "Hull durability before destruction." },
+        { key: "speed", label: "Drive Speed", min: 10, max: 180, step: 2, unit: "px/s", desc: "Forward driving speed when not engaging ground threats." },
+        { key: "cost", label: "Requisition Cost", min: 25, max: 600, step: 10, unit: "$", desc: "War funds required to deploy an AA Flak / SAM Truck." }
+      ]
+    },
+    {
+      group: "Anti-Air SAM Launcher",
+      items: [
+        { key: "visualRange", label: "SAM Visual / Lock Range", min: 200, max: 1400, step: 25, unit: "m", desc: "Slant-range dome within which airborne threats are tracked and engaged." },
+        { key: "samDamage", label: "SAM Damage Dealt", min: 10, max: 250, step: 5, unit: "dmg", desc: "Damage dealt on direct unguided SAM air impact." },
+        { key: "samCooldownTicks", kind: "rate", label: "SAM Rate of Fire", min: 0.2, max: 6, step: 0.1, unit: "shots/s", desc: "Missile launcher firing cadence against aircraft." },
+        { key: "samMaxFlightTime", label: "Max Intercept Flight Time", min: 0.5, max: 6.0, step: 0.1, unit: "s", desc: "Maximum predicted time-to-intercept considered valid before firing." },
+        { key: "samSpeeds.slow", label: "Slow SAM Speed Profile", min: 150, max: 600, step: 10, unit: "px/s", desc: "Missile speed used for slow/hovering targets (and damaged AA fallback)." },
+        { key: "samSpeeds.medium", label: "Medium SAM Speed Profile", min: 250, max: 900, step: 10, unit: "px/s", desc: "Missile speed used for cruising aircraft." },
+        { key: "samSpeeds.fast", label: "Fast SAM Speed Profile", min: 400, max: 1300, step: 20, unit: "px/s", desc: "High-velocity missile profile for fast jets and evading targets." }
+      ]
+    },
+    {
+      group: "Ground Defense Light Gun",
+      items: [
+        { key: "groundRange", label: "Ground Gun Range", min: 60, max: 500, step: 10, unit: "m", desc: "Forward engagement distance for the AA truck's light ground weapon." },
+        { key: "groundDamage", label: "Ground Gun Damage", min: 1, max: 60, step: 1, unit: "dmg", desc: "Damage per shot against enemy ground troops and bunkers." },
+        { key: "groundFireCooldownTicks", kind: "rate", label: "Ground Gun Rate of Fire", min: 0.3, max: 12, step: 0.1, unit: "shots/s", desc: "Light gun firing cadence against ground targets." },
+        { key: "groundProjSpeed", label: "Ground Bullet Speed", min: 200, max: 1400, step: 20, unit: "px/s", desc: "Velocity of light ground defense rounds." }
+      ]
+    }
+  ],
+  apc: [
+    {
+      group: "Survivability & Troop Transport",
+      items: [
+        { key: "maxHp", label: "Max Health", min: 50, max: 1000, step: 10, unit: "HP", desc: "Armored hull hit points before wrecking." },
+        { key: "speed", label: "Drive Speed", min: 10, max: 180, step: 2, unit: "px/s", desc: "Forward advance speed when moving to the front." },
+        { key: "deployTroopCount", label: "Infantry Carried", min: 0, max: 6, step: 1, unit: "troops", desc: "Infantry squads deployed at neutral bunkers or upon destruction." },
+        { key: "cost", label: "Requisition Cost", min: 50, max: 800, step: 25, unit: "$", desc: "War funds required to deploy an Armored APC." }
+      ]
+    },
+    {
+      group: "Autocannon Combat",
+      items: [
+        { key: "range", label: "Engagement Range", min: 80, max: 650, step: 10, unit: "m", desc: "Distance at which the APC stops to engage ground enemies." },
+        { key: "damage", label: "Damage Dealt", min: 2, max: 120, step: 2, unit: "dmg", desc: "Damage dealt per autocannon round." },
+        { key: "fireCooldownTicks", kind: "rate", label: "Rate of Fire", min: 0.3, max: 12, step: 0.1, unit: "shots/s", desc: "Autocannon firing cadence." },
+        { key: "projSpeed", label: "Projectile Speed", min: 250, max: 1400, step: 20, unit: "px/s", desc: "Muzzle velocity of APC rounds." }
+      ]
+    }
+  ],
+  mbt: [
+    {
+      group: "Armor & Mobility",
+      items: [
+        { key: "maxHp", label: "Max Health", min: 100, max: 2000, step: 25, unit: "HP", desc: "Heavy tank armor hit points." },
+        { key: "speed", label: "Drive Speed", min: 10, max: 150, step: 2, unit: "px/s", desc: "Forward tank speed when advancing." },
+        { key: "heavyArmor", kind: "checkbox", label: "Heavy Armor Plating", desc: "Marks MBT as heavy armor (eligible for rear-hit bonus and unarmored-only filtering)." },
+        { key: "cost", label: "Requisition Cost", min: 100, max: 1200, step: 25, unit: "$", desc: "War funds required to deploy a Main Battle Tank." }
+      ]
+    },
+    {
+      group: "Main Cannon",
+      items: [
+        { key: "range", label: "Cannon Range", min: 100, max: 900, step: 10, unit: "m", desc: "Forward engagement distance for the main tank cannon." },
+        { key: "damage", label: "Shell Damage Dealt", min: 10, max: 300, step: 5, unit: "dmg", desc: "Direct-hit kinetic damage per tank shell." },
+        { key: "fireCooldownTicks", kind: "rate", label: "Rate of Fire", min: 0.2, max: 6, step: 0.1, unit: "shots/s", desc: "Main cannon reload cadence." },
+        { key: "projSpeed", label: "Shell Speed", min: 250, max: 1400, step: 20, unit: "px/s", desc: "Velocity of fired tank shells." }
+      ]
+    }
+  ],
+  howitzer: [
+    {
+      group: "Heavy Chassis & Mobility",
+      items: [
+        { key: "maxHp", label: "Max Health", min: 150, max: 2500, step: 25, unit: "HP", desc: "Self-propelled artillery hull hit points." },
+        { key: "speed", label: "Drive Speed", min: 8, max: 120, step: 2, unit: "px/s", desc: "Forward speed while moving into artillery range." },
+        { key: "heavyArmor", kind: "checkbox", label: "Heavy Armor Plating", desc: "Marks Howitzer as heavy armor." },
+        { key: "cost", label: "Requisition Cost", min: 150, max: 1500, step: 25, unit: "$", desc: "War funds required to deploy a Self-Propelled Howitzer." }
+      ]
+    },
+    {
+      group: "Ballistic Artillery & Splash",
+      items: [
+        { key: "range", label: "Standoff Range", min: 200, max: 1400, step: 20, unit: "m", desc: "Long-range firing distance ahead of frontline armor." },
+        { key: "damage", label: "Shell Damage Dealt", min: 20, max: 500, step: 5, unit: "dmg", desc: "Base explosive damage at shell impact." },
+        { key: "splashRadius", label: "Splash Radius", min: 0, max: 220, step: 5, unit: "m", desc: "Area-of-effect blast radius around shell detonation." },
+        { key: "fireCooldownTicks", kind: "rate", label: "Rate of Fire", min: 0.15, max: 4, step: 0.05, unit: "shots/s", desc: "Artillery loading and firing cadence." },
+        { key: "projSpeed", label: "Shell Ballistic Reference", min: 200, max: 1200, step: 20, unit: "px/s", desc: "Reference shell speed parameter stored for howitzer ordnance." }
+      ]
+    }
+  ],
+  ambulance: [
+    {
+      group: "Medevac Chassis & Capacity",
+      items: [
+        { key: "maxHp", label: "Max Health", min: 30, max: 600, step: 10, unit: "HP", desc: "Hull hit points (absorbs crossfire if fighting near combat units)." },
+        { key: "speed", label: "Drive Speed", min: 15, max: 200, step: 2, unit: "px/s", desc: "Bidirectional travel speed toward stranded civilians and back to HQ." },
+        { key: "cabinCapacity", label: "Civilian Cabin Capacity", min: 1, max: 12, step: 1, unit: "civs", desc: "Max stranded civilians carried before returning to HQ for payout." },
+        { key: "cost", label: "Requisition Cost", min: 25, max: 500, step: 10, unit: "$", desc: "War funds required to deploy a Field Ambulance." }
+      ]
+    }
+  ],
+  supply_truck: [
+    {
+      group: "Logistics Chassis & Support Aura",
+      items: [
+        { key: "maxHp", label: "Max Health", min: 40, max: 800, step: 10, unit: "HP", desc: "Support truck hull hit points." },
+        { key: "speed", label: "Drive Speed", min: 10, max: 160, step: 2, unit: "px/s", desc: "Forward speed while escorting frontline combat vehicles." },
+        { key: "auraRadius", label: "Repair & Resupply Aura", min: 60, max: 600, step: 10, unit: "m", desc: "Horizontal radius around the truck where allies are repaired and reloaded." },
+        { key: "healRate", label: "Repair Rate", min: 0, max: 150, step: 5, unit: "HP/s", desc: "Health restored per second to each friendly unit inside the aura." },
+        { key: "cost", label: "Requisition Cost", min: 50, max: 600, step: 10, unit: "$", desc: "War funds required to deploy a Supply / Ammo Truck." }
+      ]
+    }
+  ]
+};
+
+export const GROUND_BEHAVIOR_TUNING_SCHEMA = [
+  {
+    group: "Damage Degradation & Logistics Rules",
+    items: [
+      { key: "damageDegradationEnabled", kind: "checkbox", label: "Damage Degrades Speed & Fire Rate", desc: "Damaged ground units slow down and reload more slowly proportionally to missing HP." },
+      { key: "minDamagedSpeedFactor", label: "Min Damaged Speed Floor", min: 0.1, max: 1.0, step: 0.05, unit: "×", desc: "Lowest speed multiplier at near-0 HP when degradation is enabled." },
+      { key: "maxDamagedCooldownMult", label: "Max Damaged Reload Slowdown", min: 1.0, max: 4.0, step: 0.1, unit: "×", desc: "Longest fire-cooldown multiplier at near-0 HP when degradation is enabled." },
+      { key: "damagedAaSlowOnly", kind: "checkbox", label: "Damaged AA Fires Slow SAMs Only", desc: "When damaged below max HP, AA trucks fall back strictly to slow SAM intercepts." },
+      { key: "supplyReloadBoost", kind: "checkbox", label: "Supply Aura Boosts Weapon Reload", desc: "Friendly units inside Supply Truck aura reduce fire cooldowns twice as fast." },
+      { key: "ambulanceTargetable", kind: "checkbox", label: "Ambulances Directly Targetable", desc: "Allow enemy ground units and weapons to directly target ambulances (normally exempt)." },
+      { key: "ambulanceCrossfireRatio", label: "Ambulance Crossfire Ratio", min: 0, max: 1.0, step: 0.05, unit: "×", desc: "Fraction of damage shared with ambulances overlapping a struck target hitbox." },
+      { key: "rearHitMultiplier", label: "Armor Rear-Hit Multiplier", min: 1.0, max: 3.0, step: 0.05, unit: "×", desc: "Damage multiplier when non-bullet ordnance strikes armored vehicles from behind." }
+    ]
+  }
+];
+
+export const BUNKER_TUNING_SCHEMA = [
+  {
+    group: "Defensive Bunker Parameters",
+    items: [
+      { key: "maxHp", label: "Bunker Max Health", min: 100, max: 3000, step: 50, unit: "HP", desc: "Hit points of a captured bunker before returning to neutral." },
+      { key: "range", label: "Bunker Fire Range", min: 100, max: 900, step: 20, unit: "m", desc: "Horizontal/slant engagement radius for captured bunker turrets." },
+      { key: "maxAirY", label: "Max Air Target Altitude", min: 50, max: 600, step: 10, unit: "m", desc: "Maximum aircraft height a bunker turret will engage." },
+      { key: "damage", label: "Bunker Damage Dealt", min: 2, max: 100, step: 1, unit: "dmg", desc: "Damage per bunker defensive round." },
+      { key: "fireCooldownTicks", kind: "rate", label: "Bunker Rate of Fire", min: 0.3, max: 12, step: 0.1, unit: "shots/s", desc: "Bunker turret firing cadence." },
+      { key: "projSpeed", label: "Bunker Bullet Speed", min: 200, max: 1400, step: 20, unit: "px/s", desc: "Muzzle velocity of bunker defensive fire." }
+    ]
+  }
+];
 
 // Phase 3 Multiplayer Match Modes & 20 Hz Network Snapshots
 export const SNAPSHOT_RATE = 20;

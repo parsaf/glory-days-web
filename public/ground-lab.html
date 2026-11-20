@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Glory Days — Ground Troops Test Lab</title>
+  <style>
+    :root {
+      --bg: #080d1a;
+      --panel: #111827;
+      --card: #1e293b;
+      --border: #334155;
+      --fg: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --amber: #f59e0b;
+      --ok: #22c55e;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+      user-select: none;
+    }
+    #lab-shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 420px;
+      width: 100%;
+      height: 100%;
+    }
+    @media (max-width: 1200px) {
+      #lab-shell {
+        grid-template-columns: minmax(0, 1fr) 360px;
+      }
+    }
+    #lab-stage {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      border-right: 1px solid var(--border);
+    }
+
+    /* Top Lab Bar & Sub-bar */
+    #lab-topbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 7px 12px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      flex: 0 0 auto;
+    }
+    #lab-subbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 6px 12px;
+      background: #0d1424;
+      border-bottom: 1px solid var(--border);
+      flex: 0 0 auto;
+    }
+    .topbar-left, .topbar-right {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 5px;
+    }
+    .lab-back {
+      background: #0f172a;
+      color: #cbd5e1;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 5px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .lab-back:hover { background: #1e293b; color: #ffffff; border-color: #64748b; }
+
+    .unit-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: var(--card);
+      color: #cbd5e1;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .unit-btn img {
+      height: 16px;
+      width: auto;
+      object-fit: contain;
+    }
+    .unit-btn:hover { background: #334155; color: #f8fafc; }
+    .unit-btn.active {
+      background: rgba(34, 197, 94, 0.22);
+      border-color: var(--ok);
+      color: #dcfce7;
+    }
+
+    .preset-btn {
+      background: var(--card);
+      color: #cbd5e1;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 10.5px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .preset-btn:hover { background: #334155; color: #f8fafc; }
+    .preset-btn.active {
+      background: rgba(56, 189, 248, 0.22);
+      border-color: var(--accent);
+      color: #bae6fd;
+    }
+
+    .mini-btn {
+      background: #0f172a;
+      color: #e2e8f0;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 10.5px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .mini-btn:hover { background: #1e293b; border-color: #64748b; }
+    .mini-btn.danger { border-color: #b91c1c; color: #fecaca; background: rgba(127, 29, 29, 0.35); }
+    .mini-btn.ok { border-color: #15803d; color: #bbf7d0; background: rgba(20, 83, 45, 0.35); }
+    .mini-btn.amber { border-color: #b45309; color: #fde68a; background: rgba(120, 53, 15, 0.35); }
+
+    .gym-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: #cbd5e1;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 4px 8px;
+      cursor: pointer;
+    }
+    .gym-toggle input { accent-color: var(--accent); cursor: pointer; margin: 0; }
+    .lab-select {
+      background: #0f172a;
+      color: #f8fafc;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 4px 7px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    /* Viewport */
+    #viewport-wrap {
+      position: relative;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+    }
+    #battlefield {
+      display: block;
+      width: 100%;
+      height: 100%;
+      cursor: grab;
+    }
+    #battlefield.dragging {
+      cursor: grabbing;
+    }
+    #overlay-legend {
+      position: absolute;
+      top: 10px;
+      left: 12px;
+      right: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      pointer-events: none;
+    }
+    .legend-pill {
+      background: rgba(15, 23, 42, 0.82);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 7px;
+      padding: 4px 10px;
+      font-size: 10.5px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 9px;
+      backdrop-filter: blur(5px);
+    }
+    .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 4px;
+    }
+    .kbd {
+      display: inline-block;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: #0f172a;
+      border: 1px solid #475569;
+      font-family: ui-monospace, monospace;
+      font-size: 10px;
+      color: #f8fafc;
+    }
+
+    /* Bottom Telemetry Strip */
+    #lab-telemetry {
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      padding: 8px 12px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      flex: 0 0 auto;
+    }
+    @media (max-width: 1220px) {
+      #lab-telemetry {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+    .tel-box {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 10px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 4px;
+      min-width: 0;
+    }
+    .tel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .tel-head strong {
+      font-family: ui-monospace, monospace;
+      color: #f8fafc;
+      font-size: 10.5px;
+      text-transform: none;
+      white-space: nowrap;
+    }
+    .bar-track {
+      height: 8px;
+      background: #0b1324;
+      border: 1px solid #334155;
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      width: 0%;
+    }
+    .timer-row {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .timer-label {
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 2px 6px;
+      font-size: 10px;
+      color: #cbd5e1;
+      font-family: ui-monospace, monospace;
+    }
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 3px 8px;
+      font-size: 10.5px;
+    }
+    .metric-cell {
+      display: flex;
+      justify-content: space-between;
+      gap: 4px;
+      font-family: ui-monospace, monospace;
+    }
+    .metric-cell span { color: var(--muted); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 10px; }
+    #tel-event-feed {
+      font-family: ui-monospace, monospace;
+      font-size: 9.5px;
+      line-height: 1.3;
+      color: #cbd5e1;
+      max-height: 52px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+
+    /* Right Tuning & Scene Dock */
+    #lab-dock {
+      background: var(--panel);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      height: 100%;
+      padding: 10px;
+      gap: 7px;
+    }
+    .dock-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex: 0 0 auto;
+    }
+    #lab-net-status {
+      font-size: 10px;
+      font-weight: 800;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      color: #94a3b8;
+    }
+    .dock-actions {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 5px;
+      flex: 0 0 auto;
+    }
+    .dock-btn {
+      background: var(--card);
+      color: #f8fafc;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 5px 6px;
+      font-size: 10.5px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .dock-btn:hover { background: #334155; }
+    .dock-btn.primary { background: rgba(37, 99, 235, 0.35); border-color: #3b82f6; color: #dbeafe; }
+    .dock-btn.warn { background: rgba(180, 83, 9, 0.25); border-color: #d97706; color: #fde68a; }
+
+    #dock-tabs {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 5px;
+      flex: 0 0 auto;
+    }
+    .dock-tab {
+      background: #0f172a;
+      color: #94a3b8;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 4px 6px;
+      font-size: 10.5px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .dock-tab:hover { color: #e2e8f0; border-color: #475569; }
+    .dock-tab.active {
+      background: rgba(56, 189, 248, 0.18);
+      border-color: var(--accent);
+      color: #bae6fd;
+    }
+
+    #lab-groups {
+      overflow-y: auto;
+      padding-right: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      min-height: 0;
+      flex: 1 1 auto;
+    }
+    .tuner-group {
+      background: rgba(30, 41, 59, 0.72);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 9px;
+    }
+    .tuner-group summary {
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--accent);
+      list-style: none;
+    }
+    .tuner-group[open] summary { margin-bottom: 6px; }
+    .tuner-list { display: flex; flex-direction: column; gap: 7px; }
+    .tuner-row {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding-top: 5px;
+      border-top: 1px solid rgba(148, 163, 184, 0.14);
+    }
+    .tuner-label-wrap {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+    }
+    .tuner-label { font-weight: 700; color: #f8fafc; }
+    .tuner-badges { display: flex; align-items: center; gap: 6px; font-family: ui-monospace, monospace; font-size: 10px; }
+    .tuner-def { color: #64748b; }
+    .tuner-unit { color: #94a3b8; }
+    .tuner-inputs {
+      display: grid;
+      grid-template-columns: 1fr 74px;
+      gap: 6px;
+      align-items: center;
+    }
+    .tuner-inputs input[type="range"] { width: 100%; accent-color: var(--accent); cursor: pointer; }
+    .tuner-num, .tuner-text, .tuner-select {
+      width: 100%;
+      background: #0f172a;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      color: #f8fafc;
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      padding: 3px 6px;
+    }
+    .tuner-num { text-align: right; }
+    .tuner-text { font-family: ui-sans-serif, system-ui, sans-serif; }
+    .tuner-num:focus, .tuner-text:focus, .tuner-select:focus { outline: none; border-color: var(--accent); }
+    .tuner-desc { font-size: 10px; line-height: 1.25; color: #94a3b8; }
+
+    .tuner-check-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 700;
+      color: #f8fafc;
+    }
+    .tuner-check-row input[type="checkbox"] {
+      accent-color: var(--accent);
+      cursor: pointer;
+      width: 14px;
+      height: 14px;
+      margin: 0;
+    }
+
+    /* Scene Checklist Cards */
+    .check-card {
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid rgba(71, 85, 105, 0.55);
+      border-radius: 6px;
+      padding: 6px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .check-card.enabled {
+      border-color: rgba(56, 189, 248, 0.55);
+      background: rgba(15, 23, 42, 0.9);
+    }
+    .check-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 800;
+      color: #f1f5f9;
+    }
+    .check-head-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .check-head input[type="checkbox"] {
+      accent-color: var(--ok);
+      cursor: pointer;
+      margin: 0;
+      width: 14px;
+      height: 14px;
+    }
+    .check-tag {
+      font-size: 9.5px;
+      font-family: ui-monospace, monospace;
+      color: #94a3b8;
+    }
+    .check-sub {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 5px 8px;
+      padding-top: 5px;
+      border-top: 1px solid rgba(148, 163, 184, 0.14);
+    }
+    .check-card:not(.enabled) .check-sub {
+      display: none;
+    }
+    .field-col {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    .field-col.span2 {
+      grid-column: span 2;
+    }
+    .field-lbl {
+      font-size: 9.5px;
+      font-weight: 700;
+      color: #94a3b8;
+      display: flex;
+      justify-content: space-between;
+    }
+    .range-mini {
+      display: grid;
+      grid-template-columns: 1fr 54px;
+      gap: 5px;
+      align-items: center;
+    }
+    .range-mini input[type="range"] { width: 100%; accent-color: var(--accent); cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div id="lab-shell">
+    <section id="lab-stage">
+      <header id="lab-topbar">
+        <div class="topbar-left">
+          <a href="/" class="lab-back">← Main Game</a>
+          <strong style="font-size:12px;color:#4ade80;letter-spacing:0.04em;">GROUND TROOPS LAB</strong>
+          <button class="unit-btn active" data-unit="infantry" type="button"><img src="/assets/sprites/infantry.png" alt="" />[1] Infantry</button>
+          <button class="unit-btn" data-unit="aa_truck" type="button"><img src="/assets/sprites/aa_flak_truck.png" alt="" />[2] AA Truck</button>
+          <button class="unit-btn" data-unit="apc" type="button"><img src="/assets/sprites/armored_apc.png" alt="" />[3] APC</button>
+          <button class="unit-btn" data-unit="mbt" type="button"><img src="/assets/sprites/main_battle_tank.png" alt="" />[4] MBT</button>
+          <button class="unit-btn" data-unit="howitzer" type="button"><img src="/assets/sprites/self_propelled_howitzer.png" alt="" />[5] Howitzer</button>
+          <button class="unit-btn" data-unit="ambulance" type="button"><img src="/assets/sprites/ambulance.png" alt="" />[6] Ambulance</button>
+          <button class="unit-btn" data-unit="supply_truck" type="button"><img src="/assets/sprites/supply_truck.png" alt="" />[7] Supply</button>
+        </div>
+
+        <div class="topbar-right">
+          <select id="opt-arena-len" class="lab-select" title="Compact Arena Length">
+            <option value="1200">1200m Compact</option>
+            <option value="2000" selected>2000m Standard</option>
+            <option value="3200">3200m Long</option>
+          </select>
+          <select id="opt-camera-mode" class="lab-select" title="Camera Framing Mode">
+            <option value="fit" selected>Fit Arena</option>
+            <option value="follow">Follow Troop</option>
+            <option value="free">Free Pan</option>
+          </select>
+          <label class="gym-toggle" title="Automatically respawn scenario when engagement concludes">
+            <input id="opt-auto-loop" type="checkbox" checked />
+            <span>Auto-Loop</span>
+          </label>
+          <select id="opt-sim-speed" class="lab-select" title="Simulation Time Scale">
+            <option value="0.2">0.2x Micro</option>
+            <option value="0.5">0.5x Slow</option>
+            <option value="1" selected>1.0x Live</option>
+            <option value="2">2.0x Fast</option>
+            <option value="4">4.0x Turbo</option>
+            <option value="0">Pause (Space)</option>
+          </select>
+          <button id="btn-step-tick" class="mini-btn" type="button" title="Advance 1 simulation tick (.)">+1 Tick</button>
+          <button id="btn-reset-scene" class="mini-btn amber" type="button" title="Reset current scene (R)">Reset (R)</button>
+          <a href="/flight-lab" class="lab-back">Flight Lab →</a>
+        </div>
+      </header>
+
+      <div id="lab-subbar">
+        <div class="topbar-left">
+          <span style="font-size:10px;font-weight:800;color:#94a3b8;letter-spacing:0.04em;">SCENARIO PRESETS:</span>
+          <button class="preset-btn" data-preset="solo" type="button">Solo March</button>
+          <button class="preset-btn active" data-preset="vs_troop" type="button">vs Enemy Troop</button>
+          <button class="preset-btn" data-preset="vs_bunker" type="button">vs Enemy Bunker</button>
+          <button class="preset-btn" data-preset="vs_neutral_bunker" type="button">vs Neutral Bunker</button>
+          <button class="preset-btn" data-preset="vs_aircraft" type="button">vs Enemy Aircraft</button>
+          <button class="preset-btn" data-preset="combined" type="button">Combined Arms</button>
+          <button class="preset-btn" data-preset="support_rescue" type="button">Support &amp; Rescue</button>
+        </div>
+
+        <div class="topbar-right">
+          <button id="btn-dmg-troop" class="mini-btn danger" type="button" title="Inflict 25% max HP damage to focal troop">Damage -25%</button>
+          <button id="btn-heal-troop" class="mini-btn ok" type="button" title="Restore focal troop to 100% HP">Heal 100%</button>
+          <button id="btn-spawn-extra" class="mini-btn" type="button" title="Spawn another tested troop at start position">+Spawn Another</button>
+          <button id="btn-zoom-out" class="mini-btn" type="button" title="Zoom Out">Zoom -</button>
+          <button id="btn-zoom-in" class="mini-btn" type="button" title="Zoom In">Zoom +</button>
+        </div>
+      </div>
+
+      <div id="viewport-wrap">
+        <canvas id="battlefield"></canvas>
+
+        <div id="overlay-legend">
+          <div class="legend-pill">
+            <span><span class="dot" style="background:#22c55e;"></span>Weapon Range</span>
+            <span><span class="dot" style="background:#38bdf8;"></span>AA Dome / Intercept</span>
+            <span><span class="dot" style="background:#34d399;"></span>Supply Aura</span>
+            <span><span class="dot" style="background:#ef4444;"></span>Bunker Range</span>
+            <span><span class="dot" style="background:#f59e0b;"></span>Crossfire</span>
+          </div>
+          <div class="legend-pill" style="color:#cbd5e1;">
+            <span><span class="kbd">1–7</span> Troop</span>
+            <span><span class="kbd">R</span> Reset</span>
+            <span><span class="kbd">Space</span> Pause</span>
+            <span><span class="kbd">.</span> Step</span>
+            <span>Drag / Wheel Pan &amp; Zoom</span>
+          </div>
+        </div>
+      </div>
+
+      <footer id="lab-telemetry">
+        <div class="tel-box">
+          <div class="tel-head">
+            <span id="tel-unit-name">INFANTRY SQUAD</span>
+            <strong id="tel-unit-status" style="color:#22c55e;">ADVANCING</strong>
+          </div>
+          <div class="timer-row">
+            <div class="timer-label"><span>Health</span><span id="tel-hp-readout">40 / 40 (100%)</span></div>
+            <div class="bar-track"><div id="tel-hp-fill" class="bar-fill" style="width:100%;background:#22c55e;"></div></div>
+          </div>
+          <div class="metrics-grid">
+            <div class="metric-cell"><span>SPEED</span><strong id="tel-speed">52 px/s</strong></div>
+            <div class="metric-cell"><span>DEGRADE</span><strong id="tel-degrade">100% spd</strong></div>
+          </div>
+        </div>
+
+        <div class="tel-box">
+          <div class="tel-head">
+            <span>Weapon &amp; Rate of Fire</span>
+            <strong id="tel-dps-readout">2.31/s • 20.8 DPS</strong>
+          </div>
+          <div class="timer-row">
+            <div class="timer-label"><span id="tel-rof-detail">CD: 26t • 9 dmg</span><span id="tel-reload-text">READY</span></div>
+            <div class="bar-track"><div id="tel-reload-fill" class="bar-fill" style="width:100%;background:#38bdf8;"></div></div>
+          </div>
+          <div id="tel-sam-row" class="timer-row" style="display:none;">
+            <div class="timer-label"><span>SAM Launcher</span><span id="tel-sam-text">READY</span></div>
+            <div class="bar-track"><div id="tel-sam-fill" class="bar-fill" style="width:100%;background:#a855f7;"></div></div>
+          </div>
+          <div class="timer-label"><span>Combat Totals</span><span id="tel-combat-totals">0 shots • 0 hits • 0 dmg</span></div>
+        </div>
+
+        <div class="tel-box">
+          <div class="tel-head">
+            <span>Target &amp; Role</span>
+            <strong id="tel-target-dist">NO TARGET</strong>
+          </div>
+          <div class="timer-label"><span id="tel-target-readout">Target: None</span><span id="tel-role-label">CAPTURE</span></div>
+          <div class="timer-label"><span id="tel-role-detail">Bunker capture: Ready</span><span id="tel-role-extra">Range: 210m</span></div>
+        </div>
+
+        <div class="tel-box">
+          <div class="tel-head">
+            <span id="tel-clock">T+0.0s • 0t</span>
+            <strong id="tel-outcome" style="color:#38bdf8;">ACTIVE</strong>
+          </div>
+          <div id="tel-event-feed"></div>
+        </div>
+      </footer>
+    </section>
+
+    <aside id="lab-dock" aria-label="Ground Lab Controls">
+      <div class="dock-header">
+        <strong style="font-size:12px;color:#4ade80;letter-spacing:0.04em;">GROUND LAB CONTROLS</strong>
+        <span id="lab-net-status">STANDALONE LOCAL</span>
+      </div>
+
+      <div class="dock-actions">
+        <button id="lab-reset-unit-btn" class="dock-btn warn" type="button">Reset Unit</button>
+        <button id="lab-reset-all-btn" class="dock-btn warn" type="button">Reset All</button>
+        <button id="lab-save-btn" class="dock-btn primary" type="button">Save Config</button>
+        <button id="lab-copy-btn" class="dock-btn" type="button">Copy JSON</button>
+      </div>
+
+      <div id="dock-tabs">
+        <button class="dock-tab active" data-tab="all" type="button">All</button>
+        <button class="dock-tab" data-tab="scene" type="button">Scene</button>
+        <button class="dock-tab" data-tab="troop" type="button">Troop</button>
+        <button class="dock-tab" data-tab="rules" type="button">Rules</button>
+      </div>
+
+      <div id="lab-groups">
+        <!-- 1. Scene Checklist -->
+        <details class="tuner-group" data-section="scene" open>
+          <summary>Scene Checklist (Compact Arena)</summary>
+          <div class="tuner-list">
+            <div class="check-card enabled">
+              <div class="check-head" style="cursor:default;">
+                <span style="color:#4ade80;">Primary Tested Troop (Allied)</span>
+                <span id="sc-primary-badge" class="check-tag">INFANTRY</span>
+              </div>
+              <div class="check-sub" style="display:grid;">
+                <div class="field-col span2">
+                  <label class="field-lbl" for="sc-profile-label"><span>Profile / Squad Label</span><span>Canvas Tag</span></label>
+                  <input id="sc-profile-label" class="tuner-text" type="text" maxlength="28" placeholder="Optional label above tested troop..." />
+                </div>
+                <div class="field-col">
+                  <label class="field-lbl" for="sc-troop-count"><span>Troop Count</span><span>1–5</span></label>
+                  <input id="sc-troop-count" class="tuner-num" type="number" min="1" max="5" step="1" value="1" />
+                </div>
+                <div class="field-col">
+                  <label class="field-lbl" for="sc-troop-x"><span>Start X</span><span>m</span></label>
+                  <input id="sc-troop-x" class="tuner-num" type="number" min="-1500" max="1500" step="20" value="-620" />
+                </div>
+                <div class="field-col span2">
+                  <div class="field-lbl"><span>Starting HP %</span><span id="sc-troop-hp-lbl">100%</span></div>
+                  <div class="range-mini">
+                    <input id="sc-troop-hp-range" type="range" min="5" max="100" step="5" value="100" />
+                    <input id="sc-troop-hp-num" class="tuner-num" type="number" min="5" max="100" step="5" value="100" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Enemy Ground Troop -->
+            <div id="card-enemy-troop" class="check-card enabled">
+              <label class="check-head">
+                <span class="check-head-left"><input id="chk-enemy-troop" type="checkbox" checked /> Enemy Ground Troop</span>
+                <span class="check-tag">COMBAT</span>
+              </label>
+              <div class="check-sub">
+                <div class="field-col">
+                  <span class="field-lbl"><span>Unit Type</span></span>
+                  <select id="sc-enemy-type" class="tuner-select">
+                    <option value="infantry">Infantry Squad</option>
+                    <option value="aa_truck">AA Flak / SAM Truck</option>
+                    <option value="apc">Armored APC</option>
+                    <option value="mbt">Main Battle Tank</option>
+                    <option value="howitzer">Howitzer</option>
+                    <option value="mirror">Mirror Tested</option>
+                  </select>
+                </div>
+                <div class="field-col">
+                  <span class="field-lbl"><span>Behavior</span></span>
+                  <select id="sc-enemy-behavior" class="tuner-select">
+                    <option value="advance">Advance &amp; Fight</option>
+                    <option value="hold">Hold &amp; Return Fire</option>
+                    <option value="passive">Passive Dummy</option>
+                  </select>
+                </div>
+                <div class="field-col">
+                  <label class="field-lbl" for="sc-enemy-count"><span>Count</span><span>1–4</span></label>
+                  <input id="sc-enemy-count" class="tuner-num" type="number" min="1" max="4" step="1" value="1" />
+                </div>
+                <div class="field-col">
+                  <label class="field-lbl" for="sc-enemy-x"><span>Spawn X</span><span>m</span></label>
+                  <input id="sc-enemy-x" class="tuner-num" type="number" min="-1500" max="1500" step="20" value="460" />
+                </div>
+                <div class="field-col span2">
+                  <div class="field-lbl"><span>Enemy Start HP %</span></div>
+                  <div class="range-mini">
+                    <input id="sc-enemy-hp-range" type="range" min="10" max="100" step="5" value="100" />
+                    <input id="sc-enemy-hp-num" class="tuner-num" type="number" min="10" max="100" step="5" value="100" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Enemy Bunker -->
+            <div id="card-enemy-bunker" class="check-card">
+              <label class="check-head">
+                <span class="check-head-left"><input id="chk-enemy-bunker" type="checkbox" /> Enemy Bunker</span>
+                <span class="check-tag">FORTIFIED</span>
+              </label>
+              <div class="check-sub">
+                <div class="field-col">
+                  <label class="field-lbl" for="sc-enemy-bunker-x"><span>Position X</span><span>m</span></label>
+                  <input id="sc-enemy-bunker-x" class="tuner-num" type="number" min="-1500" max="1500" step="20" value="320" />
+                </div>
+                <div class="field-col" style="justify-content:flex-end;">
+                  <label class="tuner-check-row"><input id="sc-enemy-bunker-passive" type="checkbox" /><span>Passive Dummy</span></label>
+                </div>
+                <div class="field-col span2">
+                  <div class="field-lbl"><span>Bunker Start HP %</span></div>
+                  <div class="range-mini">
+                    <input id="sc-enemy-bunker-hp-range" type="range" min="10" max="100" step="5" value="100" />
+                    <input id="sc-enemy-bunker-hp-num" class="tuner-num" type="number" min="10" max="100" step="5" value="100" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Neutral Bunker -->
+            <div id="card-neutral-bunker" class="check-card">
+              <label class="check-head">
+                <span class="check-head-left"><input id="chk-neutral-bunker" type="checkbox" /> Neutral Bunker</span>
+                <span class="check-tag">CAPTURE</span>
+              </label>
+              <div class="check-sub">
+                <div class="field-col span2">
+                  <label class="field-lbl" for="sc-neutral-bunker-x"><span>Position X</span><span>m</span></label>
+                  <input id="sc-neutral-bunker-x" class="tuner-num" type="number" min="-1500" max="1500" step="20" value="120" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Enemy Aircraft -->
+            <div id="card-enemy-aircraft" class="check-card">
+              <label class="check-head">
+                <span class="check-head-left"><input id="chk-enemy-aircraft" type="checkbox" /> Enemy Aircraft</span>
+                <span class="check-tag">AIR THREAT</span>
+              </label>
+              <div class="check-sub">
+                <div class="field-col">
+                  <span class="field-lbl"><span>Aircraft</span></span>
+                  <select id="sc-aircraft-type" class="tuner-select">
+                    <option value="heli">Helicopter</option>
+                    <option value="p47">P-47 Fighter</option>
+                    <option value="b52">B-52 Bomber</option>
+                  </select>
+                </div>
+                <div class="field-col">
+                  <span class="field-lbl"><span>Flight Mode</span></span>
+                  <select id="sc-aircraft-mode" class="tuner-select">
+                    <option value="flyby">Straight Flyby</option>
+                    <option value="patrol">Patrol Orbit</option>
+                    <option value="hover">Steady Hover</option>
+                  </select>
+                </div>
+                <div class="field-col span2">
+                  <div class="field-lbl"><span>Altitude (Y)</span><span>m</span></div>
+                  <div class="range-mini">
+                    <input id="sc-aircraft-alt-range" type="range" min="90" max="700" step="10" value="260" />
+                    <input id="sc-aircraft-alt-num" class="tuner-num" type="number" min="90" max="700" step="10" value="260" />
+                  </div>
+                </div>
+                <div class="field-col span2">
+                  <label class="tuner-check-row"><input id="sc-aircraft-armed" type="checkbox" /><span>Attacks Ground Troops</span></label>
+                </div>
+              </div>
+            </div>
+
+            <!-- Allied Support Escort -->
+            <div id="card-allied-escort" class="check-card">
+              <label class="check-head">
+                <span class="check-head-left"><input id="chk-allied-escort" type="checkbox" /> Allied Support Escort</span>
+                <span class="check-tag">ALLY</span>
+              </label>
+              <div class="check-sub">
+                <div class="field-col">
+                  <span class="field-lbl"><span>Escort Unit</span></span>
+                  <select id="sc-escort-type" class="tuner-select">
+                    <option value="supply_truck">Supply Truck</option>
+                    <option value="mbt">Main Battle Tank</option>
+                    <option value="infantry">Infantry Squad</option>
+                    <option value="aa_truck">AA Flak Truck</option>
+                    <option value="apc">Armored APC</option>
+                    <option value="howitzer">Howitzer</option>
+                    <option value="ambulance">Field Ambulance</option>
+                  </select>
+                </div>
+                <div class="field-col">
+                  <div class="field-lbl"><span>Escort HP %</span></div>
+                  <div class="range-mini">
+                    <input id="sc-escort-hp-range" type="range" min="10" max="100" step="5" value="100" />
+                    <input id="sc-escort-hp-num" class="tuner-num" type="number" min="10" max="100" step="5" value="100" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Stranded Civilians -->
+            <div id="card-civilians" class="check-card">
+              <label class="check-head">
+                <span class="check-head-left"><input id="chk-civilians" type="checkbox" /> Stranded Civilians</span>
+                <span class="check-tag">RESCUE</span>
+              </label>
+              <div class="check-sub">
+                <div class="field-col span2">
+                  <label class="field-lbl" for="sc-civ-count"><span>Civilian Count</span><span>1–3</span></label>
+                  <input id="sc-civ-count" class="tuner-num" type="number" min="1" max="3" step="1" value="2" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Allied / Enemy HQs -->
+            <div class="check-card">
+              <label class="check-head">
+                <span class="check-head-left"><input id="chk-allied-hq" type="checkbox" /> Allied Base HQ</span>
+                <span class="check-tag">WEST EDGE</span>
+              </label>
+            </div>
+
+            <div class="check-card">
+              <label class="check-head">
+                <span class="check-head-left"><input id="chk-enemy-hq" type="checkbox" /> Enemy Base HQ</span>
+                <span class="check-tag">EAST EDGE</span>
+              </label>
+            </div>
+          </div>
+        </details>
+
+        <!-- 2. Health Bars & Visual Overlays -->
+        <details class="tuner-group" data-section="scene" open>
+          <summary>Health Bars &amp; Visual Overlays</summary>
+          <div class="tuner-list">
+            <div class="tuner-row">
+              <label class="tuner-check-row"><input id="vis-health-bars" type="checkbox" checked /><span>Show Health Bars</span></label>
+            </div>
+            <div class="tuner-row">
+              <label class="tuner-check-row"><input id="vis-health-text" type="checkbox" checked /><span>Show Exact HP Text</span></label>
+            </div>
+            <div class="tuner-row">
+              <label class="tuner-check-row"><input id="vis-hp-color" type="checkbox" checked /><span>Color Bars by Health %</span></label>
+            </div>
+            <div class="tuner-row">
+              <label class="tuner-check-row"><input id="vis-ranges" type="checkbox" checked /><span>Show Weapon &amp; Aura Ranges</span></label>
+            </div>
+            <div class="tuner-row">
+              <label class="tuner-check-row"><input id="vis-sam-intercept" type="checkbox" checked /><span>Show SAM Intercepts</span></label>
+            </div>
+            <div class="tuner-row">
+              <label class="tuner-check-row"><input id="vis-hitboxes" type="checkbox" /><span>Show Hitboxes &amp; Crossfire</span></label>
+            </div>
+          </div>
+        </details>
+
+        <!-- 3. Selected Troop Parameters -->
+        <details id="troop-schema-group" class="tuner-group" data-section="troop" open>
+          <summary id="troop-schema-summary">Selected Troop Parameters</summary>
+          <div id="troop-schema-container" class="tuner-list"></div>
+        </details>
+
+        <!-- 4. Global Ground Behavior & Bunker Defense -->
+        <details id="rules-schema-group" class="tuner-group" data-section="rules">
+          <summary>Global Ground Behavior &amp; Bunker Defense</summary>
+          <div id="rules-schema-container" class="tuner-list"></div>
+        </details>
+      </div>
+    </aside>
+  </div>
+
+  <script type="module" src="/js/ground_lab.mjs"></script>
+</body>
+</html>

@@ -12,6 +12,11 @@ import {
   BURST_MAX_TICKS,
   BURST_RECHARGE_DELAY,
   CIVILIAN_KILL_PENALTY,
+  DEFAULT_BUNKER_CONFIG,
+  DEFAULT_GROUND_BEHAVIOR_CONFIG,
+  DEFAULT_UNIT_CONFIG,
+  DEFENSE_CONFIG,
+  GROUND_BEHAVIOR_CONFIG,
   MISSILE_FUEL_DISTANCE,
   SLOW_FIRE_INTERVAL,
   STRATEGIC_CONFIG,
@@ -24,6 +29,7 @@ import {
   configureMatch,
   createInitialState,
   createNetworkSnapshot,
+  getGroundConfigSnapshot,
   getGroundUnitFireCooldown,
   getGroundUnitSpeedMultiplier,
   handlePlayerRequisition,
@@ -42,6 +48,7 @@ import {
   stepSimulation,
   swapPlayerAircraft,
   syncBotPlayers,
+  updateGroundConfig,
   updateP47Config
 } from "../shared/simulation.mjs";
 
@@ -1482,4 +1489,139 @@ test("Damaged ground units move slower, fire slower, and damaged AA fires only s
   const restoredSam = aaState.projectiles.find((p) => p.kind === "sam_missile");
   assert.ok(restoredSam, "Repaired AA fires SAM");
   assert.equal(restoredSam.samProfile, "fast", "Repaired AA regains fast SAM capability against fast targets");
+});
+
+test("Ground Troops Lab config patching (updateGroundConfig), HP/range sync, and selective resets work cleanly", () => {
+  try {
+    const updated = updateGroundConfig({
+      units: {
+        infantry: { maxHp: 85, damage: 15, canCaptureBunker: false, bogusKey: 999 },
+        aa_truck: { visualRange: 920, samSpeeds: { slow: 350, fast: 900 } },
+        apc: { deployTroopCount: 3 }
+      },
+      behavior: {
+        damageDegradationEnabled: false,
+        ambulanceTargetable: true,
+        rearHitMultiplier: 2.25,
+        unknownRule: true
+      },
+      bunker: {
+        maxHp: 1400,
+        damage: 22
+      }
+    });
+
+    assert.equal(updated.units.infantry.maxHp, 85);
+    assert.equal(updated.units.infantry.hp, 85, "maxHp syncs hp");
+    assert.equal(updated.units.infantry.damage, 15);
+    assert.equal(updated.units.infantry.canCaptureBunker, false);
+    assert.equal("bogusKey" in updated.units.infantry, false);
+
+    assert.equal(updated.units.aa_truck.visualRange, 920);
+    assert.equal(updated.units.aa_truck.samRange, 920, "visualRange syncs samRange");
+    assert.equal(updated.units.aa_truck.samSpeeds.slow, 350);
+    assert.equal(updated.units.aa_truck.samSpeeds.medium, DEFAULT_UNIT_CONFIG.aa_truck.samSpeeds.medium);
+    assert.equal(updated.units.aa_truck.samSpeeds.fast, 900);
+
+    assert.equal(updated.units.apc.deployTroopCount, 3);
+    assert.equal(updated.behavior.damageDegradationEnabled, false);
+    assert.equal(updated.behavior.ambulanceTargetable, true);
+    assert.equal(updated.behavior.rearHitMultiplier, 2.25);
+    assert.equal("unknownRule" in updated.behavior, false);
+    assert.equal(updated.bunker.maxHp, 1400);
+    assert.equal(updated.bunker.damage, 22);
+
+    // resetUnit restores only that unit
+    const afterUnitReset = updateGroundConfig({ resetUnit: "infantry" });
+    assert.equal(afterUnitReset.units.infantry.maxHp, DEFAULT_UNIT_CONFIG.infantry.maxHp);
+    assert.equal(afterUnitReset.units.infantry.canCaptureBunker, true);
+    assert.equal(afterUnitReset.units.aa_truck.visualRange, 920, "resetUnit keeps other unit overrides intact");
+
+    // Full reset restores everything
+    const afterFullReset = updateGroundConfig({ reset: true });
+    assert.equal(afterFullReset.units.aa_truck.visualRange, DEFAULT_UNIT_CONFIG.aa_truck.visualRange);
+    assert.equal(afterFullReset.units.aa_truck.samSpeeds.fast, DEFAULT_UNIT_CONFIG.aa_truck.samSpeeds.fast);
+    assert.equal(afterFullReset.units.apc.deployTroopCount, DEFAULT_UNIT_CONFIG.apc.deployTroopCount);
+    assert.equal(afterFullReset.behavior.damageDegradationEnabled, DEFAULT_GROUND_BEHAVIOR_CONFIG.damageDegradationEnabled);
+    assert.equal(afterFullReset.behavior.ambulanceTargetable, DEFAULT_GROUND_BEHAVIOR_CONFIG.ambulanceTargetable);
+    assert.equal(afterFullReset.bunker.maxHp, DEFAULT_BUNKER_CONFIG.maxHp);
+  } finally {
+    updateGroundConfig({ reset: true });
+  }
+});
+
+test("Ground Troops Lab tunable rules, compact arena bounds, and dummy flags control ground unit behavior", () => {
+  try {
+    // 1. Disabling infantry bunker capture keeps neutral bunker neutral
+    updateGroundConfig({ units: { infantry: { canCaptureBunker: false } } });
+    const capState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    const inf = spawnGroundUnit(capState, "allied", "1", capState.bunkers[2].x - 10);
+    for (let t = 0; t < 30; t++) stepSimulation(capState, {});
+    assert.equal(capState.bunkers[2].owner, "neutral", "Infantry does not capture bunker when canCaptureBunker=false");
+    assert.ok(inf.x > capState.bunkers[2].x, "Infantry marches past neutral bunker when capture is disabled");
+
+    // 2. Tunable APC deployTroopCount deploys 3 infantry on destruction
+    updateGroundConfig({ units: { apc: { deployTroopCount: 3 } } });
+    const apcState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    const apc = spawnGroundUnit(apcState, "allied", "3", 0);
+    assert.equal(apc.troopsCarried, 3);
+    apc.hp = 0;
+    stepSimulation(apcState, {});
+    assert.equal(apcState.units.filter((u) => u.team === "allied" && u.kind === "infantry").length, 3);
+
+    // 3. Disabling damageDegradationEnabled removes speed & cooldown penalties on damaged units
+    updateGroundConfig({ behavior: { damageDegradationEnabled: false } });
+    const degState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    const damagedTank = spawnGroundUnit(degState, "allied", "4", 0);
+    damagedTank.hp = 100;
+    assert.equal(getGroundUnitSpeedMultiplier(damagedTank), 1);
+    assert.equal(getGroundUnitFireCooldown(UNIT_CONFIG.mbt.fireCooldownTicks, damagedTank), UNIT_CONFIG.mbt.fireCooldownTicks);
+
+    // 4. Enabling ambulanceTargetable lets enemy troops target and damage ambulances
+    updateGroundConfig({ behavior: { ambulanceTargetable: true } });
+    const ambTargetState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    const amb = spawnGroundUnit(ambTargetState, "allied", "6", -100);
+    amb.holdPosition = true;
+    const enemyInf = spawnGroundUnit(ambTargetState, "enemy", "1", 40);
+    enemyInf.holdPosition = true;
+    for (let t = 0; t < 40; t++) stepSimulation(ambTargetState, {});
+    assert.ok(amb.hp < amb.maxHp, "Enemy unit targets and damages ambulance when ambulanceTargetable=true");
+
+    // 5. Compact arena bounds & compact HQ position allow quick ambulance rescue & unit clamping
+    updateGroundConfig({ reset: true });
+    const compactState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    compactState.worldBounds = { minX: -1000, maxX: 1000 };
+    compactState.bunkers = [];
+    compactState.hqs.allied.x = -860;
+    compactState.hqs.enemy.x = 860;
+
+    const rescueAmb = spawnGroundUnit(compactState, "allied", "6", -600);
+    spawnCivilian(compactState, 0, 0);
+    const runner = spawnGroundUnit(compactState, "allied", "2", 850);
+    let rescued = false;
+    for (let t = 0; t < 1600; t++) {
+      stepSimulation(compactState, {});
+      assert.ok(runner.x <= 1000 - 60 + 1e-6, "Units clamp inside compact arena maxX");
+      if (compactState.events.some((e) => e.type === "civilians_rescued" && e.by === "ambulance")) {
+        rescued = true;
+        break;
+      }
+    }
+    assert.equal(rescued, true, "Ambulance rescues midfield civilian and delivers to compact Allied HQ");
+    assert.ok(rescueAmb.x <= -600, "Ambulance returned near compact Allied HQ");
+
+    // 6. holdPosition and passiveDummy keep enemy dummy stationary and non-firing
+    const dummyState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    dummyState.bunkers = [];
+    const dummy = spawnGroundUnit(dummyState, "enemy", "4", 200);
+    dummy.holdPosition = true;
+    dummy.passiveDummy = true;
+    const alliedScout = spawnGroundUnit(dummyState, "allied", "1", 0);
+    alliedScout.holdPosition = true;
+    for (let t = 0; t < 90; t++) stepSimulation(dummyState, {});
+    assert.equal(dummy.x, 200, "holdPosition dummy remains stationary");
+    assert.equal(alliedScout.hp, alliedScout.maxHp, "passiveDummy never fires at opposing units");
+  } finally {
+    updateGroundConfig({ reset: true });
+  }
 });

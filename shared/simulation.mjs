@@ -1,6 +1,5 @@
 import {
   AIRCRAFT_CONFIG,
-  AMBULANCE_CROSSFIRE_RATIO,
   AUTO_PRODUCTION_COOLDOWN_TICKS,
   AUTO_PRODUCTION_PATTERN,
   BASE_INCOME_PER_SEC,
@@ -13,12 +12,14 @@ import {
   BURST_RECHARGE_RATE,
   CEILING_Y,
   CIVILIAN_KILL_PENALTY,
+  DEFAULT_BUNKER_CONFIG,
+  DEFAULT_GROUND_BEHAVIOR_CONFIG,
   DEFAULT_P47_CONFIG,
+  DEFAULT_UNIT_CONFIG,
   DEFENSE_CONFIG,
   DT,
   GRAVITY,
-  GROUND_DAMAGE_MAX_COOLDOWN_MULT,
-  GROUND_DAMAGE_MIN_SPEED_FACTOR,
+  GROUND_BEHAVIOR_CONFIG,
   GROUND_Y,
   MATCH_MODES,
   MAX_X,
@@ -33,6 +34,13 @@ import {
 
 function clamp(v, lo, hi) {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+function getWorldBounds(state) {
+  return {
+    minX: state?.worldBounds?.minX ?? MIN_X,
+    maxX: state?.worldBounds?.maxX ?? MAX_X
+  };
 }
 
 export function calculateCivilianPayout(count) {
@@ -89,18 +97,23 @@ export function getGroundUnitHitbox(kind) {
 }
 
 export function getGroundUnitSpeedMultiplier(unit) {
+  if (!GROUND_BEHAVIOR_CONFIG.damageDegradationEnabled) return 1;
   const maxHp = Math.max(1, unit?.maxHp ?? 40);
   const hp = clamp(unit?.hp ?? maxHp, 0, maxHp);
   if (hp >= maxHp) return 1;
-  return GROUND_DAMAGE_MIN_SPEED_FACTOR + (1 - GROUND_DAMAGE_MIN_SPEED_FACTOR) * (hp / maxHp);
+  const minFactor = clamp(GROUND_BEHAVIOR_CONFIG.minDamagedSpeedFactor, 0.05, 1);
+  return minFactor + (1 - minFactor) * (hp / maxHp);
 }
 
 export function getGroundUnitFireCooldown(baseCooldown, unit) {
+  if (!GROUND_BEHAVIOR_CONFIG.damageDegradationEnabled) return baseCooldown;
   const maxHp = Math.max(1, unit?.maxHp ?? 40);
   const hp = clamp(unit?.hp ?? maxHp, 0, maxHp);
   if (hp >= maxHp) return baseCooldown;
+  const maxMult = Math.max(1, GROUND_BEHAVIOR_CONFIG.maxDamagedCooldownMult);
+  if (maxMult <= 1) return baseCooldown;
   const damageRatio = 1 - hp / maxHp;
-  const mult = 1 + damageRatio * (GROUND_DAMAGE_MAX_COOLDOWN_MULT - 1);
+  const mult = 1 + damageRatio * (maxMult - 1);
   return Math.max(baseCooldown + 1, Math.round(baseCooldown * mult));
 }
 
@@ -600,6 +613,99 @@ export function updateP47Config(patch = {}) {
   return { ...AIRCRAFT_CONFIG.p47 };
 }
 
+function cloneUnitConfig(cfg) {
+  return {
+    ...cfg,
+    ...(cfg.samSpeeds ? { samSpeeds: { ...cfg.samSpeeds } } : {})
+  };
+}
+
+export function getGroundConfigSnapshot() {
+  const units = {};
+  for (const [id, cfg] of Object.entries(UNIT_CONFIG)) {
+    units[id] = cloneUnitConfig(cfg);
+  }
+  return {
+    units,
+    behavior: { ...GROUND_BEHAVIOR_CONFIG },
+    bunker: { ...DEFENSE_CONFIG.bunker }
+  };
+}
+
+function applyCheckedGroundPatch(target, defaults, patch) {
+  if (!patch || typeof patch !== "object") return;
+  for (const [key, rawVal] of Object.entries(patch)) {
+    if (!(key in defaults)) continue;
+    const defVal = defaults[key];
+    if (typeof defVal === "number") {
+      const num = Number(rawVal);
+      if (Number.isFinite(num)) target[key] = num;
+    } else if (typeof defVal === "boolean") {
+      if (typeof rawVal === "boolean") target[key] = rawVal;
+      else if (rawVal === "true" || rawVal === "false") target[key] = rawVal === "true";
+    } else if (key === "samSpeeds" && rawVal && typeof rawVal === "object" && target.samSpeeds && defVal) {
+      for (const profile of ["slow", "medium", "fast"]) {
+        if (profile in rawVal && typeof defVal[profile] === "number") {
+          const num = Number(rawVal[profile]);
+          if (Number.isFinite(num)) target.samSpeeds[profile] = num;
+        }
+      }
+    }
+  }
+}
+
+export function updateGroundConfig(patch = {}) {
+  if (!patch || typeof patch !== "object") {
+    return getGroundConfigSnapshot();
+  }
+  if (patch.reset) {
+    for (const [id, defCfg] of Object.entries(DEFAULT_UNIT_CONFIG)) {
+      Object.assign(UNIT_CONFIG[id], cloneUnitConfig(defCfg));
+    }
+    Object.assign(GROUND_BEHAVIOR_CONFIG, DEFAULT_GROUND_BEHAVIOR_CONFIG);
+    Object.assign(DEFENSE_CONFIG.bunker, DEFAULT_BUNKER_CONFIG);
+    return getGroundConfigSnapshot();
+  }
+  if (patch.resetUnit && DEFAULT_UNIT_CONFIG[patch.resetUnit] && UNIT_CONFIG[patch.resetUnit]) {
+    Object.assign(UNIT_CONFIG[patch.resetUnit], cloneUnitConfig(DEFAULT_UNIT_CONFIG[patch.resetUnit]));
+  }
+  if (patch.resetBehavior) {
+    Object.assign(GROUND_BEHAVIOR_CONFIG, DEFAULT_GROUND_BEHAVIOR_CONFIG);
+  }
+  if (patch.resetBunker) {
+    Object.assign(DEFENSE_CONFIG.bunker, DEFAULT_BUNKER_CONFIG);
+  }
+  if (patch.units && typeof patch.units === "object") {
+    for (const [unitId, unitPatch] of Object.entries(patch.units)) {
+      if (!DEFAULT_UNIT_CONFIG[unitId] || !UNIT_CONFIG[unitId]) continue;
+      const target = UNIT_CONFIG[unitId];
+      const def = DEFAULT_UNIT_CONFIG[unitId];
+      applyCheckedGroundPatch(target, def, unitPatch);
+      if (unitPatch && typeof unitPatch === "object") {
+        if ("maxHp" in unitPatch && !("hp" in unitPatch)) {
+          target.hp = target.maxHp;
+        } else if ("hp" in unitPatch && !("maxHp" in unitPatch)) {
+          target.maxHp = target.hp;
+        }
+        if (unitId === "aa_truck") {
+          if ("visualRange" in unitPatch && !("samRange" in unitPatch)) {
+            target.samRange = target.visualRange;
+          } else if ("samRange" in unitPatch && !("visualRange" in unitPatch)) {
+            target.visualRange = target.samRange;
+          }
+        }
+      }
+    }
+  }
+  if (patch.behavior) {
+    applyCheckedGroundPatch(GROUND_BEHAVIOR_CONFIG, DEFAULT_GROUND_BEHAVIOR_CONFIG, patch.behavior);
+  }
+  if (patch.bunker) {
+    applyCheckedGroundPatch(DEFENSE_CONFIG.bunker, DEFAULT_BUNKER_CONFIG, patch.bunker);
+  }
+  return getGroundConfigSnapshot();
+}
+
 export function spawnPlayerP47Test(state, playerId, mode = "air") {
   const player = state.players[playerId];
   if (!player) return false;
@@ -785,7 +891,8 @@ export function spawnGroundUnit(state, team, unitKeyOrId, customX = null) {
   if (!cfg) return null;
   const base = BASES[team];
   const dir = team === "allied" ? 1 : -1;
-  const x = customX !== null && customX !== undefined ? customX : base.hqX + dir * 120;
+  const hqX = state.hqs?.[team]?.x ?? base.hqX;
+  const x = customX !== null && customX !== undefined ? customX : hqX + dir * 120;
   const unit = {
     id: `unit_${state.nextEntityId++}`,
     kind: cfg.kind,
@@ -1545,10 +1652,11 @@ function killCivilian(state, civIndex, attackerTeam) {
 }
 
 function applyCrossfireToAmbulances(state, targetX, hitW, damage, sourceTargetId, alreadyHitSet = null) {
-  if (!damage || damage <= 0) return;
-  const sharedDmg = Math.max(1, Math.round(damage * AMBULANCE_CROSSFIRE_RATIO));
+  const ratio = GROUND_BEHAVIOR_CONFIG.ambulanceCrossfireRatio;
+  if (!damage || damage <= 0 || ratio <= 0) return;
+  const sharedDmg = Math.max(1, Math.round(damage * ratio));
   for (const amb of state.units) {
-    if (amb.kind !== "ambulance" || amb.hp <= 0) continue;
+    if (amb.kind !== "ambulance" || amb.hp <= 0 || amb.id === sourceTargetId) continue;
     if (alreadyHitSet && alreadyHitSet.has(amb.id)) continue;
     if (Math.abs(amb.x - targetX) <= hitW) {
       amb.hp = Math.max(0, amb.hp - sharedDmg);
@@ -1568,6 +1676,7 @@ function applyCrossfireToAmbulances(state, targetX, hitW, damage, sourceTargetId
 
 function applySplashDamage(state, x, y, team, baseDamage, splashRadius, skipIds = new Set(), crossfiredAmbs = new Set()) {
   if (!splashRadius || splashRadius <= 0 || baseDamage <= 0) return;
+  const skipAmb = !GROUND_BEHAVIOR_CONFIG.ambulanceTargetable;
 
   const calcFalloff = (dist, minFloor = 0.35) => {
     const core = Math.min(48, splashRadius * 0.3);
@@ -1576,7 +1685,7 @@ function applySplashDamage(state, x, y, team, baseDamage, splashRadius, skipIds 
   };
 
   for (const u of state.units) {
-    if (u.hp <= 0 || u.team === team || u.kind === "ambulance" || skipIds.has(u.id)) continue;
+    if (u.hp <= 0 || u.team === team || (skipAmb && u.kind === "ambulance") || skipIds.has(u.id)) continue;
     const dist = Math.hypot(u.x - x, Math.max(0, y - 24));
     if (dist <= splashRadius) {
       const dmg = Math.round(baseDamage * calcFalloff(dist));
@@ -1586,7 +1695,7 @@ function applySplashDamage(state, x, y, team, baseDamage, splashRadius, skipIds 
   }
 
   for (const t of state.targets) {
-    if (t.hp <= 0 || t.team === team || t.kind === "ambulance" || skipIds.has(t.id)) continue;
+    if (t.hp <= 0 || t.team === team || (skipAmb && t.kind === "ambulance") || skipIds.has(t.id)) continue;
     const dist = Math.hypot(t.x - x, Math.max(0, y - 24));
     if (dist <= splashRadius) {
       const dmg = Math.round(baseDamage * calcFalloff(dist));
@@ -1650,13 +1759,14 @@ function findGroundEnemyTarget(state, originX, team, maxRange, opts = {}) {
     }
   };
 
+  const skipAmb = !GROUND_BEHAVIOR_CONFIG.ambulanceTargetable;
   for (const u of state.units) {
-    if (u.hp <= 0 || u.team === team || u.kind === "ambulance") continue;
+    if (u.hp <= 0 || u.team === team || (skipAmb && u.kind === "ambulance")) continue;
     if (opts.unarmoredOnly && heavySet.has(u.kind)) continue;
     consider(u.kind, u.id, u.x, u.kind === "infantry" ? 12 : 24, u);
   }
   for (const t of state.targets) {
-    if (t.hp <= 0 || t.team === team || t.kind === "ambulance") continue;
+    if (t.hp <= 0 || t.team === team || (skipAmb && t.kind === "ambulance")) continue;
     if (opts.unarmoredOnly && heavySet.has(t.kind)) continue;
     consider(t.kind, t.id, t.x, 24, t);
   }
@@ -1809,6 +1919,7 @@ function fireGroundProjectile(state, unit, kind, targetX, targetY, damage, speed
 }
 
 function updateGroundUnits(state) {
+  const { minX, maxX } = getWorldBounds(state);
   // First pass: reset repair marker and project Supply Truck [7] +25 HP/s aura + ammo resupply
   for (const u of state.units) {
     u.repairedThisTick = false;
@@ -1823,7 +1934,9 @@ function updateGroundUnits(state) {
           ally.hp = Math.min(ally.maxHp, ally.hp + supCfg.healRate * DT);
         }
         ally.repairedThisTick = true;
-        if (ally.fireCooldown > 0) ally.fireCooldown = Math.max(0, ally.fireCooldown - 1);
+        if (GROUND_BEHAVIOR_CONFIG.supplyReloadBoost && ally.fireCooldown > 0) {
+          ally.fireCooldown = Math.max(0, ally.fireCooldown - 1);
+        }
       }
     }
   }
@@ -1833,11 +1946,14 @@ function updateGroundUnits(state) {
     const u = state.units[i];
     if (u.hp <= 0) {
       if (u.kind === "armored_apc" && !u.deployedTroops && u.troopsCarried > 0) {
+        const count = Math.max(0, Math.round(u.troopsCarried));
         u.deployedTroops = true;
         u.troopsCarried = 0;
-        spawnGroundUnit(state, u.team, "infantry", clamp(u.x - 12, MIN_X + 60, MAX_X - 60));
-        spawnGroundUnit(state, u.team, "infantry", clamp(u.x + 12, MIN_X + 60, MAX_X - 60));
-        state.events.push({ type: "apc_troops_deployed", unitId: u.id, team: u.team, count: 2, reason: "destroyed", tick: state.tick });
+        for (let k = 0; k < count; k++) {
+          const offset = count === 2 ? (k === 0 ? -12 : 12) : (k - (count - 1) * 0.5) * 14;
+          spawnGroundUnit(state, u.team, "infantry", clamp(u.x + offset, minX + 60, maxX - 60));
+        }
+        state.events.push({ type: "apc_troops_deployed", unitId: u.id, team: u.team, count, reason: "destroyed", tick: state.tick });
       }
       state.events.push({ type: "unit_destroyed", unitId: u.id, kind: u.kind, team: u.team, x: u.x, tick: state.tick });
       state.units.splice(i, 1);
@@ -1849,7 +1965,7 @@ function updateGroundUnits(state) {
 
     const forwardDir = u.team === "allied" ? 1 : -1;
     const enemyTeam = u.team === "allied" ? "enemy" : "allied";
-    const enemyHqX = BASES[enemyTeam].hqX;
+    const enemyHqX = state.hqs?.[enemyTeam]?.x ?? BASES[enemyTeam].hqX;
     const speedMult = getGroundUnitSpeedMultiplier(u);
     const isDamaged = u.hp < u.maxHp;
 
@@ -1857,28 +1973,32 @@ function updateGroundUnits(state) {
       const cfg = UNIT_CONFIG.infantry;
       const effectiveSpeed = cfg.speed * speedMult;
       u.dir = forwardDir;
-      const capturable = state.bunkers.find(
-        (b) => Math.abs(b.x - u.x) <= 22 && b.owner !== u.team && (b.owner === "neutral" || b.hp <= 0)
-      );
-      if (capturable) {
-        capturable.owner = u.team;
-        capturable.hp = capturable.maxHp;
-        ensureTeamStats(state, u.team).bunkersCaptured += 1;
-        state.events.push({ type: "bunker_captured", bunkerId: capturable.id, team: u.team, tick: state.tick });
-        state.units.splice(i, 1);
-        continue;
+      if (cfg.canCaptureBunker) {
+        const capturable = state.bunkers.find(
+          (b) => Math.abs(b.x - u.x) <= 22 && b.owner !== u.team && (b.owner === "neutral" || b.hp <= 0)
+        );
+        if (capturable) {
+          capturable.owner = u.team;
+          capturable.hp = capturable.maxHp;
+          ensureTeamStats(state, u.team).bunkersCaptured += 1;
+          state.events.push({ type: "bunker_captured", bunkerId: capturable.id, team: u.team, tick: state.tick });
+          state.units.splice(i, 1);
+          continue;
+        }
       }
 
       const tgt = findGroundEnemyTarget(state, u.x, u.team, cfg.range, { forwardOnly: true });
       if (tgt) {
         u.vx = 0;
-        if (u.fireCooldown <= 0) {
+        if (!u.passiveDummy && u.fireCooldown <= 0) {
           fireGroundProjectile(state, u, "bullet", tgt.x, tgt.y, cfg.damage, cfg.projSpeed, { originY: 14, lifeTicks: 40 });
           u.fireCooldown = getGroundUnitFireCooldown(cfg.fireCooldownTicks, u);
         }
+      } else if (u.holdPosition) {
+        u.vx = 0;
       } else {
         u.vx = forwardDir * effectiveSpeed;
-        u.x = clamp(u.x + u.vx * DT, MIN_X + 60, MAX_X - 60);
+        u.x = clamp(u.x + u.vx * DT, minX + 60, maxX - 60);
         u.walkPhase += DT * 10 * speedMult;
       }
       continue;
@@ -1915,8 +2035,10 @@ function updateGroundUnits(state) {
         u.samTrack = null;
       }
 
-      if (airTarget && u.samCooldown <= 0) {
-        const intercept = planSamInterception(u.x, 34, airTarget, u.samTrack, { damaged: isDamaged });
+      if (airTarget && !u.passiveDummy && u.samCooldown <= 0) {
+        const intercept = planSamInterception(u.x, 34, airTarget, u.samTrack, {
+          damaged: isDamaged && GROUND_BEHAVIOR_CONFIG.damageDegradationEnabled && GROUND_BEHAVIOR_CONFIG.damagedAaSlowOnly
+        });
         if (intercept) {
           launchUnguidedSamMissile(state, u.team, u.x, 34, airTarget, intercept, cfg.samDamage);
           u.samCooldown = getGroundUnitFireCooldown(cfg.samCooldownTicks, u);
@@ -1926,16 +2048,18 @@ function updateGroundUnits(state) {
       const groundTarget = findGroundEnemyTarget(state, u.x, u.team, cfg.groundRange, { forwardOnly: true });
       if (groundTarget) {
         u.vx = 0;
-        if (u.fireCooldown <= 0) {
+        if (!u.passiveDummy && u.fireCooldown <= 0) {
           fireGroundProjectile(state, u, "bullet", groundTarget.x, groundTarget.y, cfg.groundDamage, cfg.groundProjSpeed, {
             originY: 26,
             lifeTicks: 45
           });
           u.fireCooldown = getGroundUnitFireCooldown(cfg.groundFireCooldownTicks, u);
         }
+      } else if (u.holdPosition) {
+        u.vx = 0;
       } else {
         u.vx = forwardDir * effectiveSpeed;
-        u.x = clamp(u.x + u.vx * DT, MIN_X + 60, MAX_X - 60);
+        u.x = clamp(u.x + u.vx * DT, minX + 60, maxX - 60);
       }
       continue;
     }
@@ -1949,24 +2073,29 @@ function updateGroundUnits(state) {
           (b) => Math.abs(b.x - u.x) <= 65 && b.owner !== u.team && (b.owner === "neutral" || b.hp <= 0)
         );
         if (neutralBunker) {
+          const count = Math.max(0, Math.round(u.troopsCarried));
           u.deployedTroops = true;
           u.troopsCarried = 0;
-          spawnGroundUnit(state, u.team, "infantry", clamp(u.x - forwardDir * 12, MIN_X + 60, MAX_X - 60));
-          spawnGroundUnit(state, u.team, "infantry", clamp(u.x, MIN_X + 60, MAX_X - 60));
-          state.events.push({ type: "apc_troops_deployed", unitId: u.id, team: u.team, count: 2, reason: "bunker", tick: state.tick });
+          for (let k = 0; k < count; k++) {
+            const offset = count === 2 ? (k === 0 ? -forwardDir * 12 : 0) : (k - (count - 1) * 0.5) * 14;
+            spawnGroundUnit(state, u.team, "infantry", clamp(u.x + offset, minX + 60, maxX - 60));
+          }
+          state.events.push({ type: "apc_troops_deployed", unitId: u.id, team: u.team, count, reason: "bunker", tick: state.tick });
         }
       }
 
       const tgt = findGroundEnemyTarget(state, u.x, u.team, cfg.range, { forwardOnly: true });
       if (tgt) {
         u.vx = 0;
-        if (u.fireCooldown <= 0) {
+        if (!u.passiveDummy && u.fireCooldown <= 0) {
           fireGroundProjectile(state, u, "bullet", tgt.x, tgt.y, cfg.damage, cfg.projSpeed, { originY: 28, lifeTicks: 48 });
           u.fireCooldown = getGroundUnitFireCooldown(cfg.fireCooldownTicks, u);
         }
+      } else if (u.holdPosition) {
+        u.vx = 0;
       } else {
         u.vx = forwardDir * effectiveSpeed;
-        u.x = clamp(u.x + u.vx * DT, MIN_X + 60, MAX_X - 60);
+        u.x = clamp(u.x + u.vx * DT, minX + 60, maxX - 60);
       }
       continue;
     }
@@ -1978,13 +2107,15 @@ function updateGroundUnits(state) {
       const tgt = findGroundEnemyTarget(state, u.x, u.team, cfg.range, { forwardOnly: true });
       if (tgt) {
         u.vx = 0;
-        if (u.fireCooldown <= 0) {
+        if (!u.passiveDummy && u.fireCooldown <= 0) {
           fireGroundProjectile(state, u, "tank_shell", tgt.x, tgt.y, cfg.damage, cfg.projSpeed, { originY: 26, lifeTicks: 55 });
           u.fireCooldown = getGroundUnitFireCooldown(cfg.fireCooldownTicks, u);
         }
+      } else if (u.holdPosition) {
+        u.vx = 0;
       } else {
         u.vx = forwardDir * effectiveSpeed;
-        u.x = clamp(u.x + u.vx * DT, MIN_X + 60, MAX_X - 60);
+        u.x = clamp(u.x + u.vx * DT, minX + 60, maxX - 60);
       }
       continue;
     }
@@ -1996,7 +2127,7 @@ function updateGroundUnits(state) {
       const tgt = findGroundEnemyTarget(state, u.x, u.team, cfg.range, { forwardOnly: true });
       if (tgt) {
         u.vx = 0;
-        if (u.fireCooldown <= 0) {
+        if (!u.passiveDummy && u.fireCooldown <= 0) {
           fireGroundProjectile(state, u, "howitzer_shell", tgt.x, tgt.y, cfg.damage, cfg.projSpeed, {
             originY: 36,
             splashRadius: cfg.splashRadius,
@@ -2004,9 +2135,11 @@ function updateGroundUnits(state) {
           });
           u.fireCooldown = getGroundUnitFireCooldown(cfg.fireCooldownTicks, u);
         }
+      } else if (u.holdPosition) {
+        u.vx = 0;
       } else {
         u.vx = forwardDir * effectiveSpeed;
-        u.x = clamp(u.x + u.vx * DT, MIN_X + 60, MAX_X - 60);
+        u.x = clamp(u.x + u.vx * DT, minX + 60, maxX - 60);
       }
       continue;
     }
@@ -2020,13 +2153,18 @@ function updateGroundUnits(state) {
         u.returningToBase = false;
       }
 
+      if (u.holdPosition) {
+        u.vx = 0;
+        continue;
+      }
+
       if (u.returningToBase) {
-        const homeHqX = BASES[u.team].hqX;
+        const homeHqX = state.hqs?.[u.team]?.x ?? BASES[u.team].hqX;
         const dx = homeHqX - u.x;
         if (Math.abs(dx) > 180) {
           u.dir = dx >= 0 ? 1 : -1;
           u.vx = u.dir * effectiveSpeed;
-          u.x = clamp(u.x + u.vx * DT, MIN_X + 60, MAX_X - 60);
+          u.x = clamp(u.x + u.vx * DT, minX + 60, maxX - 60);
         } else {
           u.vx = 0;
           if (u.passengers.length > 0) {
@@ -2063,7 +2201,7 @@ function updateGroundUnits(state) {
         if (Math.abs(dx) > 18) {
           u.dir = dx >= 0 ? 1 : -1;
           u.vx = u.dir * effectiveSpeed;
-          u.x = clamp(u.x + u.vx * DT, MIN_X + 60, MAX_X - 60);
+          u.x = clamp(u.x + u.vx * DT, minX + 60, maxX - 60);
         } else {
           u.vx = 0;
         }
@@ -2077,6 +2215,10 @@ function updateGroundUnits(state) {
       const cfg = UNIT_CONFIG.supply_truck;
       const effectiveSpeed = cfg.speed * speedMult;
       u.dir = forwardDir;
+      if (u.holdPosition) {
+        u.vx = 0;
+        continue;
+      }
       const combatTypes = new Set(["main_battle_tank", "self_propelled_howitzer", "armored_apc", "aa_flak_truck"]);
       const allies = state.units.filter((other) => other.id !== u.id && other.hp > 0 && other.team === u.team && combatTypes.has(other.kind));
       let targetX = enemyHqX - forwardDir * 240;
@@ -2088,7 +2230,7 @@ function updateGroundUnits(state) {
       const forwardDelta = (targetX - u.x) * forwardDir;
       if (forwardDelta > 16 && !groundThreat) {
         u.vx = forwardDir * effectiveSpeed;
-        u.x = clamp(u.x + u.vx * DT, MIN_X + 60, MAX_X - 60);
+        u.x = clamp(u.x + u.vx * DT, minX + 60, maxX - 60);
       } else {
         u.vx = 0;
       }
@@ -2099,7 +2241,7 @@ function updateGroundUnits(state) {
 function updateDefenses(state) {
   const bCfg = DEFENSE_CONFIG.bunker;
   for (const b of state.bunkers) {
-    if (b.owner === "neutral" || b.hp <= 0) continue;
+    if (b.owner === "neutral" || b.hp <= 0 || b.passiveDummy) continue;
     if (b.fireCooldown > 0) b.fireCooldown -= 1;
     if (b.fireCooldown > 0) continue;
 
@@ -2143,7 +2285,7 @@ function updateDefenses(state) {
     if (aa.flakCooldown > 0) aa.flakCooldown -= 1;
     if (aa.samCooldown > 0) aa.samCooldown -= 1;
 
-    const hqX = BASES[side].hqX;
+    const hqX = state.hqs?.[side]?.x ?? BASES[side].hqX;
     const samTarget = findAirEnemyTarget(state, hqX, 65, side, aaCfg.samRange, { includeParatroopers: false });
     if (samTarget && aa.samCooldown <= 0) {
       launchSamMissile(state, side, hqX, 65, samTarget, aaCfg.samSpeed, aaCfg.samDamage);
@@ -2273,7 +2415,8 @@ function updateV2s(state, inputsByPlayer) {
 
     let impacted = false;
     if (v2.launchGraceTicks <= 0) {
-      if (v2.y <= 0 || v2.x <= MIN_X + 20 || v2.x >= MAX_X - 20) {
+      const { minX, maxX } = getWorldBounds(state);
+      if (v2.y <= 0 || v2.x <= minX + 20 || v2.x >= maxX - 20) {
         impacted = true;
       } else {
         const enemyTeam = v2.team === "allied" ? "enemy" : "allied";
@@ -2288,8 +2431,9 @@ function updateV2s(state, inputsByPlayer) {
           }
         }
         if (!impacted && v2.y <= 55) {
+          const skipAmb = !GROUND_BEHAVIOR_CONFIG.ambulanceTargetable;
           for (const u of state.units) {
-            if (u.team !== v2.team && u.hp > 0 && u.kind !== "ambulance" && Math.abs(v2.x - u.x) <= 45) {
+            if (u.team !== v2.team && u.hp > 0 && !(skipAmb && u.kind === "ambulance") && Math.abs(v2.x - u.x) <= 45) {
               impacted = true;
               break;
             }
@@ -2361,8 +2505,9 @@ function updateCivilians(state) {
           civ.state = "run";
         }
       } else {
+        const { minX, maxX } = getWorldBounds(state);
         civ.vx = civ.dir * 64;
-        civ.x = clamp(civ.x + civ.vx * DT, MIN_X + 60, MAX_X - 60);
+        civ.x = clamp(civ.x + civ.vx * DT, minX + 60, maxX - 60);
       }
 
       if (Math.abs(civ.x - extractor.x) <= 24) {
@@ -2536,12 +2681,14 @@ function updateProjectiles(state) {
 
     // Ground targets (practice targets, RTS units, paratroopers, bunkers, HQ, civilians)
     if (!hit && !isAntiAirProj) {
+      const skipAmb = !GROUND_BEHAVIOR_CONFIG.ambulanceTargetable;
+      const rearMult = Math.max(1, GROUND_BEHAVIOR_CONFIG.rearHitMultiplier);
       for (const t of state.targets) {
-        if (t.hp <= 0 || t.team === pr.team || t.kind === "ambulance") continue;
+        if (t.hp <= 0 || t.team === pr.team || (skipAmb && t.kind === "ambulance")) continue;
         if (Math.abs(pr.x - t.x) <= 58 && pr.y >= 0 && pr.y <= 52) {
           const hitFromBehind = (t.dir === 1 && pr.vx > 0) || (t.dir === -1 && pr.vx < 0);
           const rearHit = hitFromBehind && pr.kind !== "bullet";
-          const dmg = rearHit ? Math.round(pr.damage * 1.75) : pr.damage;
+          const dmg = rearHit ? Math.round(pr.damage * rearMult) : pr.damage;
           t.hp = Math.max(0, t.hp - dmg);
           if (t.hp === 0) t.respawnTimer = 6;
           applyCrossfireToAmbulances(state, t.x, 58, dmg, t.id, crossfiredAmbs);
@@ -2561,13 +2708,14 @@ function updateProjectiles(state) {
 
       if (!hit) {
         for (const u of state.units) {
-          if (u.hp <= 0 || u.team === pr.team || u.kind === "ambulance") continue;
+          if (u.hp <= 0 || u.team === pr.team || (skipAmb && u.kind === "ambulance")) continue;
           const { hitW, hitH } = getGroundUnitHitbox(u.kind);
           if (Math.abs(pr.x - u.x) <= hitW && pr.y >= 0 && pr.y <= hitH) {
             const hitFromBehind = (u.dir === 1 && pr.vx > 0) || (u.dir === -1 && pr.vx < 0);
-            const isArmored = u.kind === "main_battle_tank" || u.kind === "self_propelled_howitzer" || u.kind === "armored_apc";
+            const uCfg = resolveUnitConfig(u.unitId || u.kind);
+            const isArmored = Boolean(uCfg?.heavyArmor) || u.kind === "armored_apc";
             const rearHit = isArmored && hitFromBehind && pr.kind !== "bullet";
-            const dmg = rearHit ? Math.round(pr.damage * 1.75) : pr.damage;
+            const dmg = rearHit ? Math.round(pr.damage * rearMult) : pr.damage;
             u.hp = Math.max(0, u.hp - dmg);
             applyCrossfireToAmbulances(state, u.x, hitW, dmg, u.id, crossfiredAmbs);
             skipSplash.add(u.id);
@@ -2655,7 +2803,8 @@ function updateProjectiles(state) {
       applySplashDamage(state, pr.x, Math.max(0, pr.y), pr.team, pr.damage, pr.splashRadius, skipSplash, crossfiredAmbs);
     }
 
-    if (hit || pr.lifeTicks <= 0 || pr.x < MIN_X - 300 || pr.x > MAX_X + 300 || pr.y > CEILING_Y + 400) {
+    const { minX, maxX } = getWorldBounds(state);
+    if (hit || pr.lifeTicks <= 0 || pr.x < minX - 300 || pr.x > maxX + 300 || pr.y > CEILING_Y + 400) {
       state.projectiles.splice(i, 1);
     }
   }
@@ -2812,8 +2961,9 @@ export function computeBotPilotInput(state, bot) {
           // Frontline combat support
           let target = null;
           let bestDist = Infinity;
+          const skipAmb = !GROUND_BEHAVIOR_CONFIG.ambulanceTargetable;
           for (const u of state.units) {
-            if (u.team === bot.team || u.hp <= 0 || u.kind === "ambulance") continue;
+            if (u.team === bot.team || u.hp <= 0 || (skipAmb && u.kind === "ambulance")) continue;
             const d = Math.abs(u.x - bot.x);
             if (d < bestDist) { bestDist = d; target = { x: u.x, y: 20, isAir: false }; }
           }
@@ -2964,6 +3114,7 @@ export function createNetworkSnapshot(state, eventsOverride = null) {
     autoProdCooldown: { ...(state.autoProdCooldown || { allied: 0, enemy: 0 }) },
     autoProdCounter: { ...(state.autoProdCounter || { allied: 0, enemy: 0 }) },
     includeCivilians: state.includeCivilians,
+    ...(state.worldBounds ? { worldBounds: { ...state.worldBounds } } : {}),
     // Required by stepSimulation when clients run local prediction on received snapshots
     nextEntityId: state.nextEntityId,
     botThinkCooldown: { ...(state.botThinkCooldown || { allied: 0, enemy: 0 }) },
@@ -3249,11 +3400,12 @@ export function stepSimulation(state, inputsByPlayer = {}) {
   updateCivilians(state);
 
   // 7. Update Paratroopers (Descent -> Chute Collapse -> March to nearest Bunker)
+  const { minX: paraMinX, maxX: paraMaxX } = getWorldBounds(state);
   for (let i = state.paratroopers.length - 1; i >= 0; i--) {
     const p = state.paratroopers[i];
     if (p.phase === "descent") {
       p.vx *= Math.pow(0.15, DT);
-      p.x = clamp(p.x + p.vx * DT, MIN_X + 40, MAX_X - 40);
+      p.x = clamp(p.x + p.vx * DT, paraMinX + 40, paraMaxX - 40);
       p.y += p.vy * DT;
       if (p.y <= 0) {
         p.y = 0;
@@ -3294,7 +3446,7 @@ export function stepSimulation(state, inputsByPlayer = {}) {
       } else {
         const speedMult = getGroundUnitSpeedMultiplier(p);
         p.vx = forwardDir * infCfg.speed * speedMult;
-        p.x = clamp(p.x + p.vx * DT, MIN_X + 60, MAX_X - 60);
+        p.x = clamp(p.x + p.vx * DT, paraMinX + 60, paraMaxX - 60);
         p.walkPhase += DT * 10 * speedMult;
       }
     }
