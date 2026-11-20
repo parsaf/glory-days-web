@@ -52,17 +52,17 @@ export const AIRCRAFT_CONFIG = {
     maxSpeedY: 210,
     accelX: 520,
     accelY: 560,
-    maxSecondary: 12,
-    secondaryCooldownTicks: 18,
-    maxFlares: 4,
-    flareCooldownTicks: 45,
+    maxSecondary: 8,
+    secondaryCooldownTicks: 22,
     cabinCapacity: 8,
     turnDuration: 0.54,
     idleSinkSpeed: 24,
     primarySpeed: 1050,
     primaryAngleDeg: 0, // straight out front of cockpit (tilts with pitch)
     primaryDamage: 14,
-    secondaryDamage: 145,
+    missileSpeed: 820,
+    missileDamage: 160,
+    secondaryDamage: 160,
     hitRadius: 34
   },
   p47: {
@@ -99,10 +99,8 @@ export const AIRCRAFT_CONFIG = {
     maxPitch: 0.56,
     pitchRate: 1.9,
     pitchLevelRate: 2.3,
-    maxSecondary: 8,
-    secondaryCooldownTicks: 22,
-    maxFlares: 6,
-    flareCooldownTicks: 45,
+    maxSecondary: 12,
+    secondaryCooldownTicks: 18,
     cabinCapacity: 0,
     turnDuration: 0.70,
     sineOmega: 1.15,        // long horizontal wavelength
@@ -110,8 +108,8 @@ export const AIRCRAFT_CONFIG = {
     sinePitchAmp: 0.032,    // subtle matching nose pitch
     primarySpeed: 1250,
     primaryDamage: 16,
-    missileSpeed: 820,
-    missileDamage: 160,
+    bombDamage: 145,
+    secondaryDamage: 145,
     hitRadius: 30
   }
 };
@@ -198,17 +196,14 @@ export const RENDER_HEIGHTS = {
   v2Silo: 135
 };
 
-// Requisition Menu Catalog (Keys 1-9 & 0)
+// Requisition Menu Catalog (Keys 1-6 & 0)
 export const REQUISITION_MENU = [
   { key: "1", id: "infantry", name: "Infantry Squad", cost: 50, phase: 2, unlocked: true },
   { key: "2", id: "aa_truck", name: "AA Flak / SAM Truck", cost: 150, phase: 2, unlocked: true },
-  { key: "3", id: "apc", name: "Armored APC", cost: 225, phase: 2, unlocked: true },
-  { key: "4", id: "mbt", name: "Main Battle Tank", cost: 400, phase: 2, unlocked: true },
-  { key: "5", id: "howitzer", name: "Self-Propelled Howitzer", cost: 650, phase: 2, unlocked: true },
-  { key: "6", id: "ambulance", name: "Field Ambulance", cost: 120, phase: 2, unlocked: true },
-  { key: "7", id: "supply_truck", name: "Supply / Ammo Truck", cost: 200, phase: 2, unlocked: true },
-  { key: "8", id: "b52_raid", name: "B-52 Carpet Raid", cost: 750, phase: 2, unlocked: true },
-  { key: "9", id: "v2_missile", name: "Steerable V2 Missile", cost: 850, phase: 2, unlocked: true },
+  { key: "3", id: "mbt", name: "Main Battle Tank", cost: 400, phase: 2, unlocked: true },
+  { key: "4", id: "howitzer", name: "Self-Propelled Howitzer", cost: 650, phase: 2, unlocked: true },
+  { key: "5", id: "ambulance", name: "Field Ambulance", cost: 120, phase: 2, unlocked: true },
+  { key: "6", id: "supply_truck", name: "Supply / Ammo Truck", cost: 200, phase: 2, unlocked: true },
   { key: "0", id: "swap_aircraft", name: "Swap Aircraft (at Base)", cost: 0, phase: 1, unlocked: true }
 ];
 
@@ -218,9 +213,16 @@ export const BUNKER_INCOME_PER_SEC = 6;
 export const CIVILIAN_KILL_PENALTY = 100;
 export const VILLAGE_X_POSITIONS = [-2700, -900, 900, 2700];
 
+// Special Weapon Unlock Goals (Z = B-52, X = V2; max 2 per game: 1 civilian rescue + 1 accuracy raid)
+export const SPECIAL_WEAPON_CIV_GOAL_BASE = 10;
+export const SPECIAL_WEAPON_CIV_GOAL_MULTI_HELI = 20;
+
 // Ground Troop Auto-Production, Crossfire & Damage Degradation
-export const AUTO_PRODUCTION_PATTERN = ["mbt", "mbt", "aa_truck", "mbt"];
-export const AUTO_PRODUCTION_COOLDOWN_TICKS = 90;
+export const AUTO_PRODUCTION_PATTERN = ["mbt", "infantry", "mbt", "aa_truck", "mbt"];
+export const AUTO_PRODUCTION_COOLDOWN_TICKS = 30;
+export const AUTO_PRODUCTION_GATE_CLEARANCE = 150;
+export const AUTO_PRODUCTION_COLUMN_SIZE = 5;
+export const AUTO_PRODUCTION_COLUMN_PAUSE_TICKS = 420;
 export const AMBULANCE_CROSSFIRE_RATIO = 0.5;
 export const GROUND_DAMAGE_MIN_SPEED_FACTOR = 0.45;
 export const GROUND_DAMAGE_MAX_COOLDOWN_MULT = 2.0;
@@ -264,24 +266,8 @@ export const UNIT_CONFIG = {
     groundFireCooldownTicks: 26,
     groundProjSpeed: 620
   },
-  apc: {
-    key: "3",
-    id: "apc",
-    kind: "armored_apc",
-    sprite: "armored_apc",
-    name: "Armored APC",
-    cost: 225,
-    hp: 300,
-    maxHp: 300,
-    speed: 66,
-    range: 310,
-    damage: 18,
-    fireCooldownTicks: 20,
-    projSpeed: 720,
-    deployTroopCount: 2
-  },
   mbt: {
-    key: "4",
+    key: "3",
     id: "mbt",
     kind: "main_battle_tank",
     sprite: "main_battle_tank",
@@ -297,7 +283,7 @@ export const UNIT_CONFIG = {
     heavyArmor: true
   },
   howitzer: {
-    key: "5",
+    key: "4",
     id: "howitzer",
     kind: "self_propelled_howitzer",
     sprite: "self_propelled_howitzer",
@@ -314,7 +300,7 @@ export const UNIT_CONFIG = {
     heavyArmor: true
   },
   ambulance: {
-    key: "6",
+    key: "5",
     id: "ambulance",
     kind: "ambulance",
     sprite: "ambulance",
@@ -326,7 +312,7 @@ export const UNIT_CONFIG = {
     cabinCapacity: 6
   },
   supply_truck: {
-    key: "7",
+    key: "6",
     id: "supply_truck",
     kind: "supply_truck",
     sprite: "supply_truck",

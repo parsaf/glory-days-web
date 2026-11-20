@@ -11,6 +11,7 @@ import {
   createNetworkSnapshot,
   handlePlayerRequisition,
   handlePlayerUtility,
+  launchSpecialWeapon,
   removePlayer,
   resetMatch,
   returnToLobby,
@@ -440,6 +441,9 @@ server.on("upgrade", (req, socket) => {
             swapPlayerAircraft(room.state, playerId);
           } else if (cmd.type === "requisition") {
             handlePlayerRequisition(room.state, playerId, String(cmd.key), { targetX: cmd.targetX });
+          } else if (cmd.type === "specialWeapon") {
+            launchSpecialWeapon(room.state, playerId, String(cmd.weapon || ""), { targetX: cmd.targetX });
+            broadcastRoomSnapshot(room, room.state.events);
           } else if (cmd.type === "configureMatch") {
             configureMatch(room.state, { matchMode: cmd.matchMode, botsEnabled: cmd.botsEnabled });
             broadcastRoomSnapshot(room, room.state.events);
@@ -505,7 +509,10 @@ setInterval(() => {
           e.type === "match_won" ||
           e.type === "match_reset" ||
           e.type === "match_configured" ||
-          e.type === "auto_production_toggled"
+          e.type === "auto_production_toggled" ||
+          e.type === "special_weapon_unlocked" ||
+          e.type === "b52_raid_called" ||
+          e.type === "v2_launched"
       );
       if (immediate || room.snapshotTickCounter >= SNAPSHOT_INTERVAL_TICKS) {
         room.snapshotTickCounter = 0;
