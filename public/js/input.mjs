@@ -97,9 +97,19 @@ export class KeyboardInput {
         return;
       }
 
-      if (this.b52Aiming && (code === "KeyS" || code === "Enter")) {
+      if (this.b52Aiming && (code === "KeyS" || code === "Enter" || code === "KeyZ")) {
         e.preventDefault();
         this.onAction({ type: "confirmB52" });
+        return;
+      }
+
+      if (code === "KeyZ") {
+        this.onAction({ type: "specialB52" });
+        return;
+      }
+
+      if (code === "KeyX") {
+        this.onAction({ type: "specialV2" });
         return;
       }
 
@@ -185,6 +195,7 @@ export class KeyboardInput {
       a: "KeyA", A: "KeyA",
       s: "KeyS", S: "KeyS",
       z: "KeyZ", Z: "KeyZ",
+      x: "KeyX", X: "KeyX",
       t: "KeyT", T: "KeyT",
       m: "KeyM", M: "KeyM",
       b: "KeyB", B: "KeyB",
@@ -208,7 +219,7 @@ export class KeyboardInput {
         down: false,
         firePrimary: false,
         fireSecondary: false,
-        fireFlare: false
+        utility: false
       };
     }
     return {
@@ -218,7 +229,7 @@ export class KeyboardInput {
       down: this.keys.has("ArrowDown"),
       firePrimary: this.keys.has("KeyA"),
       fireSecondary: this.b52Aiming ? false : this.keys.has("KeyS"),
-      fireFlare: this.keys.has("KeyZ")
+      utility: this.keys.has("KeyE")
     };
   }
 

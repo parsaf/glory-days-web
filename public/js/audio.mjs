@@ -86,9 +86,9 @@ export class BattlefieldAudio {
       } else if (ev.type === "secondary_fired" && localPlayer && ev.playerId === localPlayer.id) {
         this.playTone(240, 75, 0.18, "sawtooth", 0.07);
         this.playNoise(0.14, 900, 0.06);
-      } else if (ev.type === "flare_deployed" && localPlayer && ev.playerId === localPlayer.id) {
-        this.playNoise(0.22, 2400, 0.08);
-        this.playTone(900, 420, 0.14, "triangle", 0.04);
+      } else if (ev.type === "special_weapon_unlocked" && (!localPlayer || ev.team === localPlayer.team)) {
+        this.playTone(587, 784, 0.12, "triangle", 0.09, 0);
+        this.playTone(784, 1046, 0.18, "triangle", 0.1, 0.11);
       } else if (ev.type === "sam_launched" && localPlayer && ev.targetId === localPlayer.id) {
         this.playTone(880, 1180, 0.09, "square", 0.07, 0);
         this.playTone(880, 1180, 0.09, "square", 0.07, 0.12);

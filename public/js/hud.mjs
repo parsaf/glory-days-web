@@ -5,6 +5,8 @@ import {
   MAX_X,
   MIN_X,
   REQUISITION_MENU,
+  SPECIAL_WEAPON_CIV_GOAL_BASE,
+  SPECIAL_WEAPON_CIV_GOAL_MULTI_HELI,
   STRATEGIC_CONFIG,
   WORLD_WIDTH
 } from "../../shared/constants.mjs";
@@ -62,7 +64,16 @@ export class TacticalHud {
     this.elBurstState = document.getElementById("burst-state");
     this.elBurstFill = document.getElementById("burst-fill");
     this.elSecPips = document.getElementById("sec-pips");
-    this.elFlarePips = document.getElementById("flare-pips");
+    this.elDeckRow4Label = document.getElementById("deck-row4-label");
+    this.elCabinPips = document.getElementById("cabin-pips");
+    this.elSpecialPanel = document.getElementById("special-weapon-panel");
+    this.elSwTitle = document.getElementById("sw-title");
+    this.elSwChoiceZ = document.getElementById("sw-choice-z");
+    this.elSwChoiceX = document.getElementById("sw-choice-x");
+    this.elCabinHudPill = document.getElementById("cabin-hud-pill");
+    this.elHudParaCount = document.getElementById("hud-para-count");
+    this.elHudCivCount = document.getElementById("hud-civ-count");
+    this.elHudCabinCap = document.getElementById("hud-cabin-cap");
     this.elCabin = document.getElementById("cabin-readout");
     this.elTeamBadge = document.getElementById("team-badge");
     this.radar = document.getElementById("radar");
@@ -88,7 +99,13 @@ export class TacticalHud {
       } else if (ev.type === "bunker_captured") {
         this.showToast(`${ev.team.toUpperCase()} CAPTURED BUNKER`, ev.team === "allied" ? "success" : "info", 2200);
       } else if (ev.type === "civilian_killed") {
-        this.showToast(`CIVILIAN PENALTY -$${ev.penalty}`, "", 2600);
+        const msg = ev.cause === "ambulance_destroyed"
+          ? `AMBULANCE DESTROYED — CIVILIAN PENALTY -$${ev.penalty}`
+          : `CIVILIAN PENALTY -$${ev.penalty}`;
+        this.showToast(msg, "", 2600);
+      } else if (ev.type === "special_weapon_unlocked") {
+        const how = ev.reason === "civilians" ? `${ev.rescued} CIVILIANS RESCUED` : "100% BOMBING RAID";
+        this.showToast(`★ SPECIAL WEAPON UNLOCKED (${how}) — PRESS Z (B-52) OR X (V2)`, "success", 4000);
       } else if (ev.type === "b52_raid_called") {
         this.showToast("B-52 CARPET RAID INBOUND", "info", 2600);
       } else if (ev.type === "v2_launched") {
@@ -319,12 +336,31 @@ export class TacticalHud {
       this.elAutoProdBadge.style.color = autoOn ? "#22c55e" : "#94a3b8";
     }
     if (this.elQAutoProdStatus) {
-      this.elQAutoProdStatus.textContent = autoOn ? "T: AUTO PROD ON (TANKS & AA)" : "T: AUTO PROD OFF";
+      this.elQAutoProdStatus.textContent = autoOn ? "T: AUTO PROD ON (INF, TANKS & AA)" : "T: AUTO PROD OFF";
       this.elQAutoProdStatus.style.color = autoOn ? "#22c55e" : "#94a3b8";
     }
     if (this.elAudioBadge) {
       this.elAudioBadge.textContent = audioEnabled ? "SFX ON" : "SFX OFF";
       this.elAudioBadge.style.color = audioEnabled ? "#22c55e" : "#94a3b8";
+    }
+
+    const sw = state.specialWeapons?.[team] || { available: 0, earnedCount: 0, civilianEarned: false, accuracyEarned: false };
+    const heliCount = Object.values(state.players || {}).filter((pl) => pl.team === team && pl.aircraftType === "heli").length;
+    const civGoal = heliCount > 1 ? SPECIAL_WEAPON_CIV_GOAL_MULTI_HELI : SPECIAL_WEAPON_CIV_GOAL_BASE;
+    const civRescued = state.stats?.[team]?.civiliansRescued || 0;
+    if (this.elSpecialPanel) {
+      if ((sw.available || 0) > 0 && !state.winner) {
+        this.elSpecialPanel.style.display = "flex";
+        if (this.elSwTitle) {
+          this.elSwTitle.textContent = sw.available > 1
+            ? `★ SPECIAL WEAPONS READY (×${sw.available})`
+            : "★ SPECIAL WEAPON UNLOCKED";
+        }
+        this.elSwChoiceZ?.classList.toggle("active", Boolean(b52Aiming?.active));
+        this.elSwChoiceX?.classList.toggle("active", Boolean(p?.controllingV2Id));
+      } else {
+        this.elSpecialPanel.style.display = "none";
+      }
     }
 
     // Bunker ownership pips
@@ -375,17 +411,47 @@ export class TacticalHud {
         this.elBurstFill.style.background = "#f59e0b";
       }
 
-      // Ordnance & Flare pips
+      // Secondary ordnance & cabin / raid-accuracy readout
       this.renderPips(this.elSecPips, p.secondaryAmmo, p.maxSecondary, "pip");
-      this.renderPips(this.elFlarePips, p.flaresAmmo, p.maxFlares, "pip flare");
 
-      // Cabin display (shows both infantry paratroopers and rescued civilians)
       if (p.aircraftType === "heli") {
         const infCount = p.passengers.filter((u) => u === "infantry").length;
         const civCount = p.passengers.filter((u) => u === "civilian").length;
-        this.elCabin.textContent = `CABIN: ${infCount} INF • ${civCount} CIV (${p.passengers.length}/${p.cabinCapacity})`;
+        const total = p.passengers.length;
+        const cap = p.cabinCapacity;
+
+        if (this.elCabinHudPill) {
+          this.elCabinHudPill.style.display = "flex";
+          if (this.elHudParaCount) this.elHudParaCount.textContent = `${infCount} PARATROOPER${infCount === 1 ? "" : "S"}`;
+          if (this.elHudCivCount) this.elHudCivCount.textContent = `${civCount} CIVILIAN${civCount === 1 ? "" : "S"}`;
+          if (this.elHudCabinCap) this.elHudCabinCap.textContent = `(${total}/${cap})`;
+        }
+
+        if (this.elDeckRow4Label) {
+          this.elDeckRow4Label.innerHTML = `Cabin <span class="kbd">E</span>/<span class="kbd">↓</span>`;
+        }
+        if (this.elCabinPips) {
+          let html = "";
+          for (let i = 0; i < cap; i++) {
+            const cls = i < infCount ? "pip troop on" : i < infCount + civCount ? "pip on" : "pip";
+            html += `<div class="${cls}"></div>`;
+          }
+          this.elCabinPips.innerHTML = html;
+        }
+        const civTag = sw.civilianEarned ? "CIV ★" : `CIV ${Math.min(civRescued, civGoal)}/${civGoal}`;
+        this.elCabin.textContent = `ONBOARD: ${infCount} PARA • ${civCount} CIV (${total}/${cap}) • ${civTag}`;
       } else {
-        this.elCabin.textContent = "P-47 STRAIGHT ROCKETS (4,000m FUEL)";
+        if (this.elCabinHudPill) this.elCabinHudPill.style.display = "none";
+        const req = p.raidRequiredShots || p.maxSecondary || 12;
+        const hits = p.raidHits || 0;
+        if (this.elDeckRow4Label) {
+          this.elDeckRow4Label.textContent = p.raidFailed ? "Raid Acc. (Missed)" : `Raid Acc. (${hits}/${req})`;
+        }
+        if (this.elCabinPips) {
+          this.renderPips(this.elCabinPips, p.raidFailed ? 0 : hits, req, "pip flare");
+        }
+        const civTag = sw.civilianEarned ? "CIV ★" : `RESCUED ${Math.min(civRescued, civGoal)}/${civGoal}`;
+        this.elCabin.textContent = `P-47 BOMBS • ${civTag}`;
       }
 
       // Base pad passive indicator (no modal!)
@@ -398,14 +464,11 @@ export class TacticalHud {
       let alertClass = "";
       const p47Stalling = p?.aircraftType === "p47" && p?.alive && !p?.landedAtBase && (p?.flightStage >= 3 || (p?.y < 55 && p?.vy < -45));
       if (b52Aiming?.active) {
-        alertText = `B-52 TARGETING (X: ${Math.round(b52Aiming.targetX)}m) — ←/→ MOVE • S/ENTER LAUNCH • Q/ESC CANCEL`;
+        alertText = `B-52 TARGETING (X: ${Math.round(b52Aiming.targetX)}m) — ←/→ MOVE • Z/S/ENTER LAUNCH • Q/ESC CANCEL`;
         alertClass = "info";
       } else if (p?.controllingV2Id) {
         alertText = "STEERING V2 CRUISE MISSILE — ←/→ SPEED • ↑/↓ PITCH";
         alertClass = "info";
-      } else if (p?.samWarningTicks > 0) {
-        alertText = "SAM LOCK — PRESS Z FOR FLARES!";
-        alertClass = "";
       } else if (p?.aaWarningTicks > 0) {
         alertText = "INCOMING AA SAM — EVADE!";
         alertClass = "";
@@ -548,9 +611,9 @@ export class TacticalHud {
       ctx.fillRect(toRx(p.x) - 1.5, toRy(p.y) - 1.5, 3, 3);
     }
 
-    // Projectiles (highlights P-47 1/3 map missiles & SAMs)
+    // Projectiles (highlights straight 1/3-map missiles & SAMs)
     for (const pr of state.projectiles) {
-      if (pr.kind === "p47_missile") {
+      if (pr.kind === "heli_missile" || pr.kind === "p47_missile") {
         ctx.fillStyle = pr.fuelBurnedOut ? "#94a3b8" : "#fde047";
         ctx.fillRect(toRx(pr.x) - 2, toRy(pr.y) - 1.5, 4, 3);
       } else if (pr.kind === "sam_missile") {

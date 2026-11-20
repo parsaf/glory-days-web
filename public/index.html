@@ -361,7 +361,7 @@
     }
     #q-grid {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 6px;
     }
     .q-item {
@@ -468,6 +468,73 @@
       color: #f8fafc;
     }
 
+    #top-left-hud {
+      position: absolute;
+      top: 52px;
+      left: 12px;
+      z-index: 20;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      pointer-events: none;
+    }
+    #special-weapon-panel {
+      display: none;
+      flex-direction: column;
+      gap: 5px;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(245, 158, 11, 0.72);
+      border-radius: 8px;
+      padding: 7px 11px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.48);
+      backdrop-filter: blur(6px);
+    }
+    .sw-header {
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0.05em;
+      color: #fbbf24;
+    }
+    .sw-choices {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      font-weight: 800;
+      color: #f8fafc;
+    }
+    .sw-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 7px;
+      border-radius: 5px;
+      background: rgba(30, 41, 59, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.32);
+    }
+    .sw-chip.active {
+      border-color: #22c55e;
+      background: rgba(34, 197, 94, 0.22);
+      color: #dcfce7;
+    }
+    .sw-key {
+      color: #fbbf24;
+      border-color: rgba(245, 158, 11, 0.65);
+    }
+    #cabin-hud-pill {
+      background: rgba(15, 23, 42, 0.84);
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      backdrop-filter: blur(6px);
+      border-radius: 8px;
+      padding: 5px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #e2e8f0;
+    }
+
     #flight-lab-link {
       position: absolute;
       top: 52px;
@@ -519,9 +586,26 @@
         </div>
       </div>
 
+      <div id="top-left-hud">
+        <div id="special-weapon-panel">
+          <div id="sw-title" class="sw-header">★ SPECIAL WEAPON UNLOCKED</div>
+          <div class="sw-choices">
+            <span id="sw-choice-z" class="sw-chip"><span class="kbd sw-key">Z</span> B-52 RAID</span>
+            <span id="sw-choice-x" class="sw-chip"><span class="kbd sw-key">X</span> V2 MISSILE</span>
+          </div>
+        </div>
+        <div id="cabin-hud-pill">
+          <span style="color:#94a3b8;font-weight:800;">ONBOARD</span>
+          <span id="hud-para-count" style="color:#4ade80;">4 PARATROOPERS</span>
+          <span style="color:#475569;">•</span>
+          <span id="hud-civ-count" style="color:#fde047;">0 CIVILIANS</span>
+          <span id="hud-cabin-cap" style="color:#94a3b8;font-family:ui-monospace,monospace;">(4/8)</span>
+        </div>
+      </div>
+
       <a id="flight-lab-link" href="/flight-lab" target="_blank" rel="noopener" title="Open Standalone P-47 Physics Test Gym in New Tab">P-47 FLIGHT LAB ↗</a>
 
-      <div id="base-banner">LANDED ON BASE PAD — REPAIRING &amp; REARMING • PRESS <span class="kbd">Q</span> → <span class="kbd">0</span> TO SWAP AIRCRAFT • <span class="kbd">E</span> TO LOAD TROOPS</div>
+      <div id="base-banner">LANDED ON BASE PAD — REPAIRING &amp; REARMING • PRESS <span class="kbd">Q</span> → <span class="kbd">0</span> TO SWAP AIRCRAFT • <span class="kbd">E</span> / <span class="kbd">↓</span> LOAD/DROP TROOPS</div>
 
       <div id="tactical-alert"></div>
 
@@ -589,7 +673,7 @@
                 <strong style="color:#f8fafc;">[1] ATTACK &amp; TRANSPORT HELICOPTER</strong>
                 <span style="font-size:10px;color:#86efac;font-weight:700;">350 HP • 8 CABIN</span>
               </div>
-              <div style="font-size:11px;color:#94a3b8;">Hover/VTOL transport, 12× free-drop bombs, paratrooper bunker capture &amp; civilian rescue.</div>
+              <div style="font-size:11px;color:#94a3b8;">Hover/VTOL transport, 8× 4,000m straight missiles, paratrooper drops/pickup &amp; civilian rescue.</div>
             </div>
 
             <div id="lobby-craft-p47" class="lobby-panel" style="cursor:pointer;">
@@ -597,7 +681,7 @@
                 <strong style="color:#f8fafc;">[2] P-47 THUNDERBOLT FIGHTER</strong>
                 <span style="font-size:10px;color:#fde047;font-weight:700;">300 HP • 540 u/s</span>
               </div>
-              <div style="font-size:11px;color:#94a3b8;">High-speed runway fighter, twin wing cannons, 8× 4,000m rockets &amp; wide banking U-turns.</div>
+              <div style="font-size:11px;color:#94a3b8;">High-speed runway fighter, twin wing cannons, 12× ballistic dumb bombs &amp; wide banking U-turns.</div>
             </div>
           </div>
 
@@ -615,7 +699,7 @@
 
       <div id="q-drawer">
         <div id="q-header">
-          <span>REQUISITION &amp; BASE MENU (Press 1–9 or 0)</span>
+          <span>REQUISITION &amp; BASE MENU (Press 1–6 or 0)</span>
           <span id="q-autoprod-status" style="color:#94a3b8;font-size:11px;font-weight:700;">T: AUTO PROD OFF</span>
           <span style="color:var(--muted);font-weight:500;">Press <span class="kbd">Q</span> to close</span>
         </div>
@@ -642,9 +726,9 @@
           <span style="font-size:11px;color:var(--muted);">Ordnance <span class="kbd">S</span></span>
           <div id="sec-pips" class="pip-row"></div>
         </div>
-        <div class="row">
-          <span style="font-size:11px;color:var(--muted);">Flares <span class="kbd">Z</span></span>
-          <div id="flare-pips" class="pip-row"></div>
+        <div id="cabin-pips-row" class="row">
+          <span id="deck-row4-label" style="font-size:11px;color:var(--muted);">Cabin <span class="kbd">E</span>/<span class="kbd">↓</span></span>
+          <div id="cabin-pips" class="pip-row"></div>
         </div>
       </div>
 
@@ -652,7 +736,7 @@
       <div class="deck-card" style="padding:6px 8px;">
         <div class="row" style="margin-bottom:4px;">
           <span style="font-size:11px;font-weight:700;letter-spacing:0.04em;color:#cbd5e1;">TACTICAL RADAR (12,000m BATTLEFIELD)</span>
-          <span id="cabin-readout" style="font-size:11px;color:#86efac;font-weight:600;">CABIN: 4 / 8 PARATROOPERS</span>
+          <span id="cabin-readout" style="font-size:11px;color:#86efac;font-weight:600;">CABIN: 4 INF • 0 CIV (4/8)</span>
         </div>
         <canvas id="radar"></canvas>
       </div>
@@ -661,14 +745,14 @@
       <div class="deck-card" style="font-size:10.5px;gap:2px;padding:7px 10px;">
         <div class="row"><strong style="color:#fbbf24;">KEYBOARD CONTROLS</strong><span id="team-badge" style="font-weight:700;color:#60a5fa;">ALLIED</span></div>
         <div class="row"><span style="color:var(--muted);">Flight / Aim</span><span><span class="kbd">←</span> <span class="kbd">→</span> <span class="kbd">↑</span> <span class="kbd">↓</span></span></div>
-        <div class="row"><span style="color:var(--muted);">Primary / Rocket</span><span><span class="kbd">A</span> Gun • <span class="kbd">S</span> Bomb/Rocket</span></div>
-        <div class="row"><span style="color:var(--muted);">Flares / Troops</span><span><span class="kbd">Z</span> Flares • <span class="kbd">E</span> Drop/Load</span></div>
-        <div class="row"><span style="color:var(--muted);">Purchase / Swap</span><span><span class="kbd">Q</span> Menu → <span class="kbd">1–9</span> / <span class="kbd">0</span></span></div>
+        <div class="row"><span style="color:var(--muted);">Primary / Ordnance</span><span><span class="kbd">A</span> Gun • <span class="kbd">S</span> Missile/Bomb</span></div>
+        <div class="row"><span style="color:var(--muted);">Special / Troops</span><span><span class="kbd">Z</span> B-52 • <span class="kbd">X</span> V2 • <span class="kbd">E</span>/<span class="kbd">↓</span> Troops</span></div>
+        <div class="row"><span style="color:var(--muted);">Purchase / Swap</span><span><span class="kbd">Q</span> Menu → <span class="kbd">1–6</span> / <span class="kbd">0</span></span></div>
         <div class="row"><span style="color:var(--muted);">Match / Lobby</span><span><span class="kbd">M</span> Mode • <span class="kbd">B</span> Bots • <span class="kbd">T</span> Auto • <span class="kbd">L</span> Lobby • <span class="kbd">N</span> <span id="audio-badge" style="color:#22c55e;font-weight:700;">SFX ON</span></span></div>
       </div>
     </div>
   </div>
 
-  <script type="module" src="/js/main.mjs?v=5"></script>
+  <script type="module" src="/js/main.mjs?v=7"></script>
 </body>
 </html>

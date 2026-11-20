@@ -9,7 +9,7 @@ import {
 } from "../../shared/constants.mjs";
 
 const SPRITE_NAMES = [
-  "aa_flak_truck", "ambulance", "armored_apc", "b52_bomber", "base_hq", "bunker",
+  "aa_flak_truck", "ambulance", "b52_bomber", "base_hq", "bunker",
   "civilian", "helicopter", "infantry", "main_battle_tank", "p47_thunderbolt",
   "paratrooper", "self_propelled_howitzer", "supply_truck", "v2_missile", "v2_silo",
   "heli_fly_1", "heli_fly_2", "heli_fly_3", "heli_turn_1", "heli_turn_2", "heli_turn_3",
@@ -309,7 +309,6 @@ export class SpriteBattlefieldRenderer {
     const unitHeightMap = {
       infantry: RENDER_HEIGHTS.infantry,
       aa_flak_truck: RENDER_HEIGHTS.aaTruck,
-      armored_apc: RENDER_HEIGHTS.apc,
       main_battle_tank: RENDER_HEIGHTS.mbt,
       self_propelled_howitzer: RENDER_HEIGHTS.howitzer,
       ambulance: RENDER_HEIGHTS.ambulance,
@@ -320,13 +319,6 @@ export class SpriteBattlefieldRenderer {
       if (t.hp <= 0) continue;
       const th = unitHeightMap[t.kind] || 48;
       this.drawSprite(t.kind, t.x, 0, th, { team: t.team, flipX: t.dir < 0 }, w, groundScreenY);
-      const { sx, sy } = this.worldToScreen(t.x, th + 12, w, groundScreenY);
-      if (sx > -80 && sx < w + 80) {
-        ctx.fillStyle = "rgba(0,0,0,0.55)";
-        ctx.fillRect(sx - 24, sy, 48, 5);
-        ctx.fillStyle = "#ef4444";
-        ctx.fillRect(sx - 24, sy, 48 * (t.hp / t.maxHp), 5);
-      }
     }
 
     for (const u of state.units || []) {
@@ -357,17 +349,9 @@ export class SpriteBattlefieldRenderer {
         ? `inf_run_${(Math.floor(u.walkPhase || 0) % 4) + 1}`
         : u.kind;
       this.drawSprite(spriteKey, u.x, u.y || 0, uh, { team: u.team, flipX: u.dir < 0 }, w, groundScreenY);
-      const { sx, sy } = this.worldToScreen(u.x, uh + 10, w, groundScreenY);
-      if (sx > -80 && sx < w + 80) {
-        const barW = u.kind === "infantry" ? 24 : 46;
-        ctx.fillStyle = "rgba(0,0,0,0.55)";
-        ctx.fillRect(sx - barW * 0.5, sy, barW, 4);
-        const hpFillColor = u.hp < u.maxHp
-          ? (u.hp < u.maxHp * 0.35 ? "#ef4444" : "#f59e0b")
-          : (u.team === "allied" ? "#3b82f6" : "#ef4444");
-        ctx.fillStyle = hpFillColor;
-        ctx.fillRect(sx - barW * 0.5, sy, barW * (u.hp / u.maxHp), 4);
-        if (u.kind === "ambulance" && u.passengers?.length > 0) {
+      if (u.kind === "ambulance" && u.passengers?.length > 0) {
+        const { sx, sy } = this.worldToScreen(u.x, uh + 10, w, groundScreenY);
+        if (sx > -80 && sx < w + 80) {
           ctx.fillStyle = "#fde047";
           ctx.font = "800 10px ui-sans-serif, system-ui, sans-serif";
           ctx.textAlign = "center";
@@ -433,12 +417,6 @@ export class SpriteBattlefieldRenderer {
           ctx.fillRect(sx - 22, sy + 4, 44, 4);
           ctx.fillStyle = player.team === "allied" ? "#3b82f6" : "#ef4444";
           ctx.fillRect(sx - 22, sy + 4, 44 * (player.hp / player.maxHp), 4);
-        } else if (player.samWarningTicks > 0) {
-          if (Math.floor(state.time * 8) % 2 === 0) {
-            ctx.fillStyle = "#f87171";
-            ctx.font = "900 11px ui-sans-serif, system-ui, sans-serif";
-            ctx.fillText("⚠ SAM LOCK — PRESS Z", sx, sy - 14);
-          }
         } else if (player.aaWarningTicks > 0) {
           if (Math.floor(state.time * 8) % 2 === 0) {
             ctx.fillStyle = "#fb923c";
@@ -519,7 +497,7 @@ export class SpriteBattlefieldRenderer {
         ctx.moveTo(sx, sy);
         ctx.lineTo(sx - pr.vx * 0.02 * this.camZoom, sy + pr.vy * 0.02 * this.camZoom);
         ctx.stroke();
-      } else if (pr.kind === "p47_missile" || pr.kind === "sam_missile") {
+      } else if (pr.kind === "heli_missile" || pr.kind === "p47_missile" || pr.kind === "sam_missile") {
         if (!pr.fuelBurnedOut) {
           const samColor = pr.samProfile === "fast"
             ? "#bae6fd"
@@ -555,18 +533,18 @@ export class SpriteBattlefieldRenderer {
         ctx.beginPath();
         ctx.arc(sx, sy, 4.5 * this.camZoom, 0, Math.PI * 2);
         ctx.fill();
-      } else if (pr.kind === "b52_bomb") {
-        ctx.save();
-        ctx.translate(sx, sy);
-        ctx.rotate(Math.atan2(-pr.vy, pr.vx));
-        ctx.fillStyle = "#cbd5e1";
-        ctx.fillRect(-5 * this.camZoom, -2.5 * this.camZoom, 10 * this.camZoom, 5 * this.camZoom);
-        ctx.restore();
-      } else if (pr.kind === "heli_bomb") {
-        ctx.fillStyle = "#f8fafc";
-        ctx.beginPath();
-        ctx.arc(sx, sy, 4 * this.camZoom, 0, Math.PI * 2);
-        ctx.fill();
+      } else if (pr.kind === "p47_bomb" || pr.kind === "heli_bomb" || pr.kind === "b52_bomb") {
+        const img = pr.team === "enemy" ? this.getEnemyCanvas("v2_missile") : this.sprites.get("v2_missile");
+        const ang = Math.hypot(pr.vx, pr.vy) > 5 ? Math.atan2(-pr.vy, pr.vx) : Math.PI * 0.5;
+        const bw = pr.kind === "b52_bomb" ? 20 : 26;
+        const bh = pr.kind === "b52_bomb" ? 7 : 9;
+        if (img) {
+          ctx.save();
+          ctx.translate(sx, sy);
+          ctx.rotate(ang);
+          ctx.drawImage(img, -(bw * 0.5) * this.camZoom, -(bh * 0.5) * this.camZoom, bw * this.camZoom, bh * this.camZoom);
+          ctx.restore();
+        }
       }
     }
 

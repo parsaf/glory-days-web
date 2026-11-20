@@ -1,10 +1,11 @@
-import { DT, MAX_X, MIN_X, STRATEGIC_CONFIG } from "../../shared/constants.mjs";
+import { DT, MAX_X, MIN_X } from "../../shared/constants.mjs";
 import {
   addPlayer,
   configureMatch,
   createInitialState,
   handlePlayerRequisition,
   handlePlayerUtility,
+  launchSpecialWeapon,
   reconcileClientState,
   resetMatch,
   returnToLobby,
@@ -85,7 +86,7 @@ function toggleAutoProduction() {
     setAutoProduction(state, team, nextEnabled);
     dispatchEvents(state.events);
   }
-  hud.showToast(`AUTO TROOPS: ${nextEnabled ? "ON (TANKS & AA)" : "OFF"}`, "info", 1800);
+  hud.showToast(`AUTO TROOPS: ${nextEnabled ? "ON (INF, TANKS & AA)" : "OFF"}`, "info", 1800);
 }
 
 function launchSortie() {
@@ -250,13 +251,46 @@ const input = new KeyboardInput((action) => {
     hud.showToast(on ? "AUDIO: ON" : "AUDIO: MUTED", "info", 1600);
     return;
   }
+  if (action.type === "specialB52") {
+    const p = state.players[localPlayerId];
+    if (p && !state.winner && (state.specialWeapons?.[p.team]?.available || 0) > 0) {
+      b52Aiming.active = true;
+      b52Aiming.targetX = p.team === "allied" ? 1800 : -1800;
+      input.menuOpen = false;
+      input.b52Aiming = true;
+      hud.setMenuOpen(false);
+    } else {
+      hud.showToast("SPECIAL WEAPON LOCKED (RESCUE CIVILIANS OR 100% RAID)", "info", 2200);
+    }
+    return;
+  }
+  if (action.type === "specialV2") {
+    const p = state.players[localPlayerId];
+    if (p && !state.winner && (state.specialWeapons?.[p.team]?.available || 0) > 0) {
+      b52Aiming.active = false;
+      input.b52Aiming = false;
+      input.menuOpen = false;
+      hud.setMenuOpen(false);
+      if (wsConnected && ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "specialWeapon", weapon: "v2" }));
+      } else {
+        const res = launchSpecialWeapon(state, localPlayerId, "v2");
+        if (!res) hud.showToast("V2 LAUNCH UNAVAILABLE", "info", 1800);
+        else dispatchEvents(state.events);
+      }
+    } else {
+      hud.showToast("SPECIAL WEAPON LOCKED (RESCUE CIVILIANS OR 100% RAID)", "info", 2200);
+    }
+    return;
+  }
   if (action.type === "confirmB52") {
     if (!b52Aiming.active) return;
     if (wsConnected && ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "requisition", key: "8", targetX: b52Aiming.targetX }));
+      ws.send(JSON.stringify({ type: "specialWeapon", weapon: "b52", targetX: b52Aiming.targetX }));
     } else {
-      handlePlayerRequisition(state, localPlayerId, "8", { targetX: b52Aiming.targetX });
-      dispatchEvents(state.events);
+      const res = launchSpecialWeapon(state, localPlayerId, "b52", { targetX: b52Aiming.targetX });
+      if (!res) hud.showToast("SPECIAL WEAPON UNAVAILABLE", "info", 1800);
+      else dispatchEvents(state.events);
     }
     b52Aiming.active = false;
     input.b52Aiming = false;
@@ -276,7 +310,6 @@ const input = new KeyboardInput((action) => {
     return;
   }
   if (action.type === "menuKey") {
-    const p = state.players[localPlayerId];
     if (action.key === "0") {
       if (wsConnected && ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "swapAircraft" }));
@@ -286,29 +319,13 @@ const input = new KeyboardInput((action) => {
       }
       return;
     }
-    if (action.key === "8") {
-      if (p && !state.winner && state.teamFunds[p.team] >= STRATEGIC_CONFIG.b52_raid.cost) {
-        b52Aiming.active = true;
-        b52Aiming.targetX = p.team === "allied" ? 1800 : -1800;
-        input.menuOpen = false;
-        input.b52Aiming = true;
-        hud.setMenuOpen(false);
-      } else {
-        hud.showToast("NEED $750 FOR B-52 CARPET RAID", "info");
-      }
-      return;
-    }
-    if (/^[1-79]$/.test(action.key)) {
+    if (/^[1-6]$/.test(action.key)) {
       if (wsConnected && ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "requisition", key: action.key }));
       } else {
         const res = handlePlayerRequisition(state, localPlayerId, action.key);
         if (!res) hud.showToast("REQUISITION UNAVAILABLE", "info");
         else dispatchEvents(state.events);
-      }
-      if (action.key === "9") {
-        input.menuOpen = false;
-        hud.setMenuOpen(false);
       }
     }
   }
