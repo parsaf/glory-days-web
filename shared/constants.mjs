@@ -181,6 +181,56 @@ export const HELI_BOT_CONFIG = {
   airTacticMaxTicks: 120          // Max commitment before re-scoring tactics (~2.0s)
 };
 
+export const P47_BOT_CONFIG = {
+  // Air combat, interception & pursuit
+  airVisualRange: 1150,           // Slant range to shift focus onto enemy aircraft
+  airEngageHysteresisRange: 1400, // Keep tracking engaged air target slightly past visual range
+  airMaxBehindFront: 950,         // Normal max distance behind enemy frontline to chase healthy air targets
+  airPursuitHpRatio: 0.20,        // Only pursue deep behind frontline if enemy HP <= 20%
+  airPursuitMaxBehindFront: 1850, // Hard cap behind frontline even for <= 20% HP pursuit
+  airPursuitMaxGap: 900,          // Max horizontal gap to chase a <= 20% HP enemy aircraft
+  enemyHqNoChaseDist: 1150,       // Never chase enemy aircraft into enemy HQ area
+  aerialBattleRange: 1000,        // Slant range defining active aerial battle (blocks ammo-only RTB)
+  b52InterceptRange: 5500,        // Dedicated high-altitude B-52 interception range
+
+  // Dynamic air-to-air tactics & humanization
+  airPassThroughDist: 420,        // Distance to fly past enemy aircraft before U-turning to re-engage
+  airSlashOffsetY: 85,            // Altitude offset during high-speed head-on merge
+  airBnZClimbY: 310,              // Boom-and-zoom perch altitude against low helicopters
+  airReactionMinTicks: 6,         // Min visual perception sample interval (~100ms)
+  airReactionMaxTicks: 10,        // Max visual perception sample interval (~167ms)
+  airAimWanderMaxY: 28,           // Max gentle vertical tracking imperfection (±px)
+  airPrimaryAimTolerance: 105,    // Generous vertical tolerance (px) for spammy wing cannon bursts
+  airPrimaryBurstHoldTicks: 16,   // Follow-through burst duration (~0.27s) once primary fires at air
+  airFireReactMinTicks: 1,        // Min trigger reaction delay on newly lined-up air target
+  airFireReactMaxTicks: 4,        // Max trigger reaction delay
+
+  // Strategic RTB & safe runway landing
+  lowHpRetreatRatio: 0.35,        // Retreat even during combat when HP <= 35%
+  pursuitMinHpRatio: 0.40,        // Do not pursue deep kills if own HP < 40%
+  baseReadyHpRatio: 0.92,         // Repair threshold on pad before takeoff
+  scrambleEnemyDist: 750,         // Scramble off pad early if enemy aircraft threatens base
+  landingApproachDist: 1150,      // Distance from pad center to begin shallow landing glide
+
+  // Frontline dive-strafing & bombing
+  groundMaxBehindFront: 1800,     // Focus on enemy frontline echelon
+  bunkerMaxBehindFront: 2000,     // Break frontline bunkers & immediate support bunker, not deep rear
+  attackRunAltitude: 245,         // Cruise/setup altitude before diving onto ground targets
+  diveStartDist: 660,             // Horizontal range to nose down onto ground target
+  pulloutDist: 190,               // Pull up before passing directly over target
+  minCombatY: 98,                 // Hard pull-out floor to prevent ground impact
+  extendAfterPassDist: 560,       // Distance to extend past target before U-turning for next pass
+  bombReleaseTolX: 78,            // Horizontal tolerance (px) around exact ballistic impact point
+
+  // Threat evasion
+  evadeLookaheadSec: 1.45,        // Projectile CPA lookahead window
+  evadeDangerRadius: 88,          // CPA threshold to trigger evasion
+  evadeTicks: 36,                 // Duration of climb/dive break (~0.60s)
+  evadeTurnTicks: 48,             // Duration of defensive turn-back (~0.80s)
+  evadeCooldownTicks: 20,         // Cooldown after maneuver unless imminent hit (< 0.45s)
+  evadeFloorY: 105                // Never dive below this altitude during evasion
+};
+
 export const P47_TUNING_SCHEMA = [
   {
     group: "Speed, Thrust, Cruise & Opposite Braking",

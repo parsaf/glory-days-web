@@ -19,6 +19,7 @@ import {
   DEFAULT_GROUND_BEHAVIOR_CONFIG,
   DEFAULT_UNIT_CONFIG,
   DEFENSE_CONFIG,
+  GRAVITY,
   GROUND_BEHAVIOR_CONFIG,
   MISSILE_FUEL_DISTANCE,
   SLOW_FIRE_INTERVAL,
@@ -2853,4 +2854,279 @@ test("Home bases are immune to aircraft weapons/bombs, ignored by bot aircraft, 
   }
   assert.ok(primaryShots >= 2, `Expected spammy primary burst on offset air target (primaryShots=${primaryShots})`);
   assert.ok(missileShots >= 1, `Expected secondary missile fired on offset air target (missileShots=${missileShots})`);
+});
+
+test("P-47 Bot AI: dive-strafes and bombs frontline MBT/bunker, ignores deep bunker and enemy HQ, and holds bombs near civilians", () => {
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const p47 = addPlayer(state, "bot_allied_2", "allied", "p47", { isBot: true });
+  p47.x = -1200;
+  p47.y = 245;
+  p47.vx = 380;
+  p47.speed = 380;
+  p47.dir = 1;
+  p47.landedAtBase = false;
+
+  const frontMbt = spawnGroundUnit(state, "enemy", "mbt", 0);
+  frontMbt.holdPosition = true;
+  frontMbt.passiveDummy = true;
+  const frontBunker = state.bunkers[2]; // x = 0
+  frontBunker.owner = "enemy";
+  frontBunker.passiveDummy = true;
+  const deepBunker = state.bunkers[4]; // x = 3600
+  deepBunker.owner = "enemy";
+  deepBunker.passiveDummy = true;
+  const startHqHp = state.hqs.enemy.hp;
+
+  let shots = 0;
+  let bombs = 0;
+  for (let t = 0; t < 500; t++) {
+    stepSimulation(state, {});
+    for (const ev of state.events) {
+      if (ev.type === "primary_fired" && ev.playerId === p47.id) shots += 1;
+      if (ev.type === "secondary_fired" && ev.playerId === p47.id) bombs += 1;
+    }
+  }
+
+  assert.ok(shots > 0, `Expected P-47 dive-strafe primary bursts (shots=${shots})`);
+  assert.ok(bombs > 0, `Expected P-47 ballistic dumb bomb releases (bombs=${bombs})`);
+  assert.ok(frontMbt.hp < frontMbt.maxHp || frontBunker.hp < frontBunker.maxHp, "Frontline MBT/bunker took real damage from P-47 pass");
+  assert.equal(deepBunker.hp, deepBunker.maxHp, "Deep rear bunker (x=3600) stays untouched while frontline exists");
+  assert.equal(state.hqs.enemy.hp, startHqHp, "Enemy HQ stays untouched");
+
+  // Civilian standing directly at predicted bomb impact point -> bot holds fire
+  const civState = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const bomber = addPlayer(civState, "bot_allied_2", "allied", "p47", { isBot: true });
+  bomber.x = -500;
+  bomber.y = 180;
+  bomber.vx = 380;
+  bomber.vy = 0;
+  bomber.speed = 380;
+  bomber.dir = 1;
+  bomber.landedAtBase = false;
+  const mbt2 = spawnGroundUnit(civState, "enemy", "mbt", -140);
+  mbt2.holdPosition = true;
+  mbt2.passiveDummy = true;
+  const tFall = Math.sqrt((2 * (184 - 20)) / GRAVITY);
+  const impactX = bomber.x + bomber.vx * tFall;
+  spawnCivilian(civState, impactX, impactX);
+  const civInp = computeBotPilotInput(civState, bomber);
+  assert.equal(civInp.fireSecondary, false, "P-47 holds bomb release when a civilian is at the impact point");
+});
+
+test("P-47 Bot AI: intercepts high-altitude B-52, shifts to air combat with frontline leash, and fires spammy cannon bursts", () => {
+  // 1. High-altitude B-52 interception
+  const s1 = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const enemyCmd = addPlayer(s1, "enemy_cmd", "enemy", "heli", { isBot: false });
+  enemyCmd.alive = false;
+  s1.specialWeapons.enemy.available = 1;
+  const b52 = launchSpecialWeapon(s1, "enemy_cmd", "b52", { targetX: 0 });
+  b52.x = 400;
+
+  const p47 = addPlayer(s1, "bot_allied_2", "allied", "p47", { isBot: true });
+  p47.x = -600;
+  p47.y = 650;
+  p47.vx = 420;
+  p47.speed = 420;
+  p47.dir = 1;
+  p47.landedAtBase = false;
+
+  let b52Shots = 0;
+  for (let t = 0; t < 160; t++) {
+    stepSimulation(s1, {});
+    if (s1.events.some((e) => e.type === "primary_fired" && e.playerId === p47.id)) b52Shots += 1;
+  }
+  assert.equal(p47.botAi?.mode, "air_combat", "P-47 shifts into air_combat to intercept enemy B-52");
+  assert.ok(p47.y > 750, `Expected P-47 to climb toward B-52 altitude (y=${p47.y.toFixed(1)})`);
+  assert.ok(b52Shots > 0 || b52.hp < b52.maxHp, "P-47 fires on enemy B-52");
+
+  // 2. Frontline leash on healthy distant enemy vs <= 20% HP pursuit when close
+  const s2 = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const f47 = addPlayer(s2, "bot_allied_2", "allied", "p47", { isBot: true });
+  f47.x = -200;
+  f47.y = 240;
+  f47.vx = 380;
+  f47.speed = 380;
+  f47.dir = 1;
+  f47.landedAtBase = false;
+  const frontMbt = spawnGroundUnit(s2, "enemy", "mbt", 0);
+  frontMbt.holdPosition = true;
+  frontMbt.passiveDummy = true;
+
+  const enemyHeli = addPlayer(s2, "enemy_h", "enemy", "heli", { isBot: false });
+  enemyHeli.x = 2200;
+  enemyHeli.y = 200;
+  enemyHeli.landedAtBase = false;
+  computeBotPilotInput(s2, f47);
+  assert.notEqual(f47.botAi?.mode, "air_combat", "Does not chase healthy enemy aircraft far behind enemy frontline");
+
+  enemyHeli.hp = enemyHeli.maxHp * 0.15;
+  enemyHeli.x = 1200;
+  f47.x = 600;
+  computeBotPilotInput(s2, f47);
+  assert.equal(f47.botAi?.mode, "air_combat", "Pursues <=20% HP enemy aircraft when reasonably close behind frontline");
+
+  // 3. Spammy wing cannon bursts on vertically offset air target
+  const s3 = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const a47 = addPlayer(s3, "bot_allied_2", "allied", "p47", { isBot: true });
+  a47.x = -400;
+  a47.y = 240;
+  a47.vx = 380;
+  a47.speed = 380;
+  a47.dir = 1;
+  a47.landedAtBase = false;
+
+  const targetHeli = addPlayer(s3, "enemy_h2", "enemy", "heli", { isBot: false });
+  targetHeli.x = 50;
+  targetHeli.y = 290; // 50px vertical separation
+  targetHeli.landedAtBase = false;
+
+  let airBurstShots = 0;
+  for (let t = 0; t < 25; t++) {
+    stepSimulation(s3, { enemy_h2: {} });
+    if (s3.events.some((e) => e.type === "primary_fired" && e.playerId === a47.id)) airBurstShots += 1;
+  }
+  assert.ok(airBurstShots >= 2, `Expected looser spammy air-to-air wing cannon bursts (airBurstShots=${airBurstShots})`);
+});
+
+test("P-47 Bot AI: strategic RTB executes safe airstrip landing, waits for bomb reload, takes off, and fights through aerial battle when empty", () => {
+  // 1. Out of bombs with safe airspace -> flies home, lands safely without hard landing, reloads all 12 bombs, takes off
+  const s1 = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const p = addPlayer(s1, "bot_allied_2", "allied", "p47", { isBot: true });
+  p.x = -2600;
+  p.y = 240;
+  p.vx = -380;
+  p.speed = 380;
+  p.dir = -1;
+  p.secondaryAmmo = 0;
+  p.landedAtBase = false;
+
+  let sawRtb = false;
+  let sawSafeLanding = false;
+  let hardLandings = 0;
+  let sawFullReloadOnPad = false;
+  let tookOffAfterReload = false;
+
+  for (let t = 0; t < 1100; t++) {
+    stepSimulation(s1, {});
+    if (p.botAi?.mode === "rtb") sawRtb = true;
+    if (p.landedAtBase) sawSafeLanding = true;
+    if (p.landedAtBase && p.secondaryAmmo === p.maxSecondary) sawFullReloadOnPad = true;
+    if (sawFullReloadOnPad && !p.landedAtBase && p.y > 15) {
+      tookOffAfterReload = true;
+      break;
+    }
+    if (s1.events.some((e) => e.type === "hard_landing" && e.playerId === p.id)) hardLandings += 1;
+  }
+
+  assert.equal(sawRtb, true, "P-47 enters RTB when bombs are depleted and airspace is safe");
+  assert.equal(sawSafeLanding, true, "P-47 touches down safely on friendly airstrip");
+  assert.equal(hardLandings, 0, "P-47 lands cleanly without hard-landing damage");
+  assert.equal(p.hp, p.maxHp, "P-47 preserves full HP through airstrip landing");
+  assert.equal(sawFullReloadOnPad, true, "P-47 waits on airstrip until all bombs reload");
+  assert.equal(tookOffAfterReload, true, "P-47 rolls and takes off after reload completes");
+
+  // 2. Out of bombs DURING active aerial battle -> fights with wing cannons instead of fleeing
+  const s2 = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const p2 = addPlayer(s2, "bot_allied_2", "allied", "p47", { isBot: true });
+  p2.x = -200;
+  p2.y = 260;
+  p2.vx = 380;
+  p2.speed = 380;
+  p2.dir = 1;
+  p2.secondaryAmmo = 0;
+  p2.landedAtBase = false;
+
+  const enemyP47 = addPlayer(s2, "enemy_p", "enemy", "p47", { isBot: false });
+  enemyP47.x = 350;
+  enemyP47.y = 260;
+  enemyP47.landedAtBase = false;
+
+  computeBotPilotInput(s2, p2);
+  assert.equal(p2.botAi?.mode, "air_combat", "P-47 stays fighting in aerial battle with cannons even when out of bombs");
+
+  // 3. Low HP (<= 35%) overrides combat and retreats to base
+  p2.hp = p2.maxHp * 0.25;
+  computeBotPilotInput(s2, p2);
+  assert.equal(p2.botAi?.mode, "rtb", "P-47 retreats immediately when HP drops below 35%");
+  assert.equal(p2.botAi?.rtbReason, "hp");
+});
+
+test("P-47 Bot AI: evades incoming SAMs without ground impact and exhibits humanized elevation tracking lag", () => {
+  // 1. SAM evasion
+  const s1 = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const p47 = addPlayer(s1, "bot_allied_2", "allied", "p47", { isBot: true });
+  p47.x = -500;
+  p47.y = 200;
+  p47.vx = 380;
+  p47.speed = 380;
+  p47.dir = 1;
+  p47.landedAtBase = false;
+
+  s1.projectiles.push({
+    id: "proj_test_p47_sam",
+    kind: "sam_missile",
+    guided: false,
+    team: "enemy",
+    x: 40,
+    y: 40,
+    vx: -520,
+    vy: 230,
+    speed: 568,
+    damage: 65,
+    lifeTicks: 150
+  });
+
+  let sawEvade = false;
+  let pattern = "none";
+  let minY = p47.y;
+  for (let t = 0; t < 90; t++) {
+    stepSimulation(s1, {});
+    if (p47.botAi?.mode === "evade") {
+      sawEvade = true;
+      if (p47.botAi.evadePattern !== "none") pattern = p47.botAi.evadePattern;
+    }
+    if (p47.y < minY) minY = p47.y;
+  }
+  assert.equal(sawEvade, true, "P-47 enters evade mode when threatened by incoming SAM");
+  assert.ok(["climb_break", "dive_break", "turn_break"].includes(pattern), `Executed valid evade pattern (${pattern})`);
+  assert.ok(minY >= 60, `P-47 stays safely above ground during evasion (minY=${minY.toFixed(1)})`);
+  assert.equal(p47.hp, p47.maxHp, "Evasive maneuver causes unguided SAM to miss P-47");
+
+  // 2. Humanized elevation tracking lag & variance
+  const s2 = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const bot = addPlayer(s2, "bot_allied_2", "allied", "p47", { isBot: true });
+  bot.x = -700;
+  bot.y = 220;
+  bot.vx = 380;
+  bot.speed = 380;
+  bot.dir = 1;
+  bot.landedAtBase = false;
+
+  const human = addPlayer(s2, "enemy_human", "enemy", "heli", { isBot: false });
+  human.x = 200;
+  human.y = 180;
+  human.hp = 5000;
+  human.maxHp = 5000;
+  human.landedAtBase = false;
+
+  for (let t = 0; t < 45; t++) {
+    stepSimulation(s2, { enemy_human: {} });
+  }
+  const trackedBefore = bot.botAi.trackedAirY;
+
+  let trackedAt5 = trackedBefore;
+  for (let t = 0; t < 45; t++) {
+    stepSimulation(s2, { enemy_human: { up: true } });
+    if (t === 4) trackedAt5 = bot.botAi.trackedAirY;
+  }
+
+  assert.ok(
+    Math.abs(trackedAt5 - trackedBefore) < 12,
+    `Expected delayed P-47 perception at 5 ticks after climb start (delta=${(trackedAt5 - trackedBefore).toFixed(1)})`
+  );
+  assert.ok(
+    bot.botAi.trackedAirY - trackedBefore > 35,
+    `Expected P-47 tracked elevation to catch up by tick 45 (delta=${(bot.botAi.trackedAirY - trackedBefore).toFixed(1)})`
+  );
+  assert.notEqual(bot.botAi.aimWanderY, 0, "P-47 tracking variance (aimWanderY) is active");
 });
