@@ -25,10 +25,12 @@ import {
   GRAVITY,
   GROUND_BEHAVIOR_CONFIG,
   GROUND_Y,
+  HELI_BOT_CONFIG,
   MATCH_MODES,
   MAX_X,
   MIN_X,
   MISSILE_FUEL_DISTANCE,
+  P47_BOT_CONFIG,
   SLOW_FIRE_INTERVAL,
   SPECIAL_WEAPON_CIV_GOAL_BASE,
   SPECIAL_WEAPON_CIV_GOAL_MULTI_HELI,
@@ -482,7 +484,8 @@ export function createPlayer(id, team = "allied", aircraftType = "heli", opts = 
     // Phase 2 tactical alerts & V2 control
     samWarningTicks: 0,
     aaWarningTicks: 0,
-    controllingV2Id: null
+    controllingV2Id: null,
+    botAi: null
   };
 }
 
@@ -889,6 +892,7 @@ export function spawnPlayerP47Test(state, playerId, mode = "air") {
   player.samWarningTicks = 0;
   player.aaWarningTicks = 0;
   player.controllingV2Id = null;
+  player.botAi = null;
 
   if (mode === "runway") {
     player.x = base.padCenterX;
@@ -1024,6 +1028,7 @@ export function spawnPlayerHeliTest(state, playerId, mode = "hover") {
   player.samWarningTicks = 0;
   player.aaWarningTicks = 0;
   player.controllingV2Id = null;
+  player.botAi = null;
 
   if (mode === "turn") {
     player.x = dir * -1000;
@@ -1160,6 +1165,7 @@ export function swapPlayerAircraft(state, playerId, nextType = null) {
   player.samWarningTicks = 0;
   player.aaWarningTicks = 0;
   player.controllingV2Id = null;
+  player.botAi = null;
   checkCivilianSpecialUnlock(state, player.team);
   state.events.push({ type: "aircraft_swapped", playerId, aircraftType: targetType, tick: state.tick });
   return true;
@@ -2019,6 +2025,7 @@ function killPlayerAircraft(state, player) {
   player.controllingV2Id = null;
   player.samWarningTicks = 0;
   player.aaWarningTicks = 0;
+  player.botAi = null;
   resetPlayerRaidAccuracy(player);
   player.respawnTicks = 180;
   state.teamFunds[player.team] = Math.max(0, state.teamFunds[player.team] - 100);
@@ -2160,7 +2167,7 @@ function applySplashDamage(state, x, y, team, baseDamage, splashRadius, skipIds 
 
   const enemyTeam = team === "allied" ? "enemy" : "allied";
   const hq = state.hqs[enemyTeam];
-  if (hq && hq.hp > 0 && !skipIds.has(`hq_${enemyTeam}`) && Math.abs(hq.x - x) <= splashRadius + 40 && y <= 160) {
+  if (!allowFriendlyGroundFire && hq && hq.hp > 0 && !skipIds.has(`hq_${enemyTeam}`) && Math.abs(hq.x - x) <= splashRadius + 40 && y <= 160) {
     const dist = Math.max(0, Math.abs(hq.x - x) - 40);
     const dmg = Math.round(baseDamage * calcFalloff(dist, 0.45));
     damageHq(state, hq, dmg, team);
@@ -3130,7 +3137,7 @@ function updateProjectiles(state) {
         }
       }
 
-      if (!hit) {
+      if (!hit && !isAircraftProj) {
         const enemyTeam = pr.team === "allied" ? "enemy" : "allied";
         const hq = state.hqs[enemyTeam];
         if (hq && hq.hp > 0 && Math.abs(pr.x - hq.x) <= 95 && pr.y >= 0 && pr.y <= 140) {
@@ -3347,7 +3354,1185 @@ function updateAiCommanders(state) {
   }
 }
 
-export function computeBotPilotInput(state, bot) {
+function botHash01(botId, step, salt = 0) {
+  let h = (Math.imul(step | 0, 374761393) + Math.imul(salt | 0, 668265263)) | 0;
+  for (let i = 0; i < botId.length; i++) {
+    h = Math.imul(h ^ botId.charCodeAt(i), 2246822519);
+  }
+  h = Math.imul(h ^ (h >>> 13), 3266489917);
+  h = (h ^ (h >>> 16)) >>> 0;
+  return h / 4294967296;
+}
+
+function ensureHeliBotAi(bot) {
+  if (!bot.botAi || typeof bot.botAi !== "object") {
+    bot.botAi = {
+      mode: "patrol",
+      evadeTicks: 0,
+      evadePattern: "none",
+      evadeCooldown: 0,
+      evadeDir: bot.team === "allied" ? 1 : -1,
+      strafePhase: "approach",
+      strafeBreakX: 0,
+      strafeTargetId: null,
+      engagedAirId: null,
+      rtbCommitted: false,
+      rtbReason: "none",
+      airTactic: "none",
+      airTacticPhase: "commit",
+      airTacticTicks: 0,
+      airPassDir: bot.team === "allied" ? 1 : -1,
+      airPassOvershoot: HELI_BOT_CONFIG.airPassThroughDist,
+      airPassTargetY: 140,
+      airFeintSign: 1,
+      airWeavePhase: 0,
+      airWeaveSpeed: 3.1,
+      airBurstPauseTicks: 0,
+      airThreatTicks: 0,
+      senseCooldown: 0,
+      trackedAirId: null,
+      trackedAirX: 0,
+      trackedAirY: 140,
+      trackedAirVx: 0,
+      trackedAirVy: 0,
+      pendingAirX: 0,
+      pendingAirY: 140,
+      pendingAirVx: 0,
+      pendingAirVy: 0,
+      hasPendingAir: false,
+      aimWanderY: 0,
+      aimWanderTicks: 0,
+      airAimLockTicks: 0,
+      airFireDelayTicks: 2,
+      airPrimaryBurstTicks: 0,
+      threatNoticeTicks: 0
+    };
+  }
+  return bot.botAi;
+}
+
+function computeHeliFrontline(state, team) {
+  const { minX, maxX } = getWorldBounds(state);
+  const forwardDir = team === "allied" ? 1 : -1;
+  const enemyTeam = team === "allied" ? "enemy" : "allied";
+  const homeHqX = state.hqs?.[team]?.x ?? BASES[team].hqX;
+  const enemyHqX = state.hqs?.[enemyTeam]?.x ?? BASES[enemyTeam].hqX;
+
+  let friendlyBestProg = 600;
+  let friendlyFrontX = homeHqX + forwardDir * 600;
+  for (const u of state.units) {
+    if (u.hp <= 0 || u.team !== team || u.kind === "ambulance") continue;
+    const prog = (u.x - homeHqX) * forwardDir;
+    if (prog > friendlyBestProg) {
+      friendlyBestProg = prog;
+      friendlyFrontX = u.x;
+    }
+  }
+  for (const b of state.bunkers) {
+    if (b.owner !== team || b.hp <= 0) continue;
+    const prog = (b.x - homeHqX) * forwardDir;
+    if (prog > friendlyBestProg) {
+      friendlyBestProg = prog;
+      friendlyFrontX = b.x;
+    }
+  }
+
+  let enemyMinProg = Infinity;
+  let enemyFrontX = enemyHqX;
+  let hasEnemyGround = false;
+
+  const considerEnemyGround = (x) => {
+    hasEnemyGround = true;
+    const prog = (x - homeHqX) * forwardDir;
+    if (prog < enemyMinProg) {
+      enemyMinProg = prog;
+      enemyFrontX = x;
+    }
+  };
+
+  for (const u of state.units) {
+    if (u.hp <= 0 || u.team === team || u.kind === "ambulance") continue;
+    considerEnemyGround(u.x);
+  }
+  for (const t of state.targets) {
+    if (t.hp <= 0 || t.team === team || t.kind === "ambulance") continue;
+    considerEnemyGround(t.x);
+  }
+  for (const b of state.bunkers) {
+    if (b.owner !== enemyTeam || b.hp <= 0) continue;
+    considerEnemyGround(b.x);
+  }
+
+  let frontlineX;
+  if (hasEnemyGround) {
+    const hqProg = (enemyHqX - homeHqX) * forwardDir;
+    const friendlyPushingHq = hqProg - friendlyBestProg <= 2200;
+    const maxProg = friendlyPushingHq ? hqProg : Math.max(0, hqProg - 1200);
+    const clampedProg = Math.min(enemyMinProg, maxProg);
+    frontlineX = homeHqX + forwardDir * clampedProg;
+  } else {
+    const mapMid = (minX + maxX) * 0.5;
+    const hasUnownedEnemyHalfBunker = state.bunkers.some(
+      (b) => (b.x - mapMid) * forwardDir >= 0 && b.owner !== team
+    );
+    if (!hasUnownedEnemyHalfBunker) {
+      frontlineX = enemyHqX - forwardDir * 1200;
+    } else {
+      const midProg = (mapMid - homeHqX) * forwardDir;
+      const pushProg = friendlyBestProg + 600;
+      const hqCapProg = Math.max(midProg, (enemyHqX - homeHqX) * forwardDir - 1800);
+      frontlineX = homeHqX + forwardDir * clamp(Math.max(midProg, pushProg), 0, hqCapProg);
+    }
+  }
+
+  return {
+    frontlineX,
+    enemyFrontX,
+    friendlyFrontX,
+    hasEnemyGround,
+    homeHqX,
+    enemyHqX,
+    minX,
+    maxX
+  };
+}
+
+function steerHeliTo(bot, inp, goalX, goalY, opts = {}) {
+  const deadzoneX = opts.deadzoneX ?? 32;
+  const keepFacing = Boolean(opts.keepFacing);
+  const forceDir = opts.forceDir ?? 0;
+
+  if (forceDir !== 0 && bot.dir !== forceDir) {
+    if (forceDir > 0) inp.right = true;
+    else inp.left = true;
+  } else {
+    const dx = goalX - bot.x;
+    if (dx > deadzoneX) {
+      if (!keepFacing || bot.dir === 1) inp.right = true;
+    } else if (dx < -deadzoneX) {
+      if (!keepFacing || bot.dir === -1) inp.left = true;
+    }
+  }
+
+  if (!opts.skipVertical) {
+    const yTolDown = opts.yTolDown ?? 10;
+    const yTolUp = opts.yTolUp ?? 12;
+    const predY = bot.y + (bot.vy || 0) * 0.22;
+    if (predY < goalY - yTolDown) inp.up = true;
+    else if (predY > goalY + yTolUp) inp.down = true;
+  }
+}
+
+function detectIncomingThreat(state, bot, botCfg = HELI_BOT_CONFIG) {
+  const threatKinds = new Set(["sam_missile", "heli_missile", "p47_missile", "tank_shell", "howitzer_shell"]);
+  const botCenterY = bot.y + 22;
+  let best = null;
+
+  for (const pr of state.projectiles) {
+    if (pr.team === bot.team || !threatKinds.has(pr.kind)) continue;
+    const dist = Math.hypot(pr.x - bot.x, pr.y - botCenterY);
+    if (dist > 950) continue;
+
+    const rx = bot.x - pr.x;
+    const ry = botCenterY - pr.y;
+    const rvx = (bot.vx || 0) - (pr.vx || 0);
+    const rvy = (bot.vy || 0) - (pr.vy || 0);
+    const rVelSq = rvx * rvx + rvy * rvy;
+    if (rVelSq <= 1e-3) continue;
+
+    const tCpa = clamp(-(rx * rvx + ry * rvy) / rVelSq, 0, botCfg.evadeLookaheadSec);
+    if (tCpa <= 0.02) continue;
+
+    const cpaDist = Math.hypot(rx + rvx * tCpa, ry + rvy * tCpa);
+    if (cpaDist <= botCfg.evadeDangerRadius) {
+      if (!best || tCpa < best.tCpa) {
+        best = {
+          tCpa,
+          cpaDist,
+          y: pr.y,
+          vy: pr.vy || 0,
+          fromSam: pr.kind === "sam_missile"
+        };
+      }
+    }
+  }
+
+  if (!best && (bot.aaWarningTicks || 0) >= 60) {
+    best = {
+      tCpa: 1.1,
+      cpaDist: 65,
+      y: 34,
+      vy: 180,
+      fromSam: true
+    };
+  }
+
+  return best;
+}
+
+function updateHeliEvasion(state, bot, ai, inp, frontlineX, forwardDir) {
+  if (ai.evadeCooldown > 0) ai.evadeCooldown -= 1;
+
+  const threat = detectIncomingThreat(state, bot);
+  if (!threat || ai.evadeTicks > 0) {
+    ai.threatNoticeTicks = 0;
+  } else if (!threat.fromSam && threat.tCpa > 0.35) {
+    ai.threatNoticeTicks = (ai.threatNoticeTicks || 0) + 1;
+  } else {
+    ai.threatNoticeTicks = 4;
+  }
+  const threatNoticed = Boolean(threat && (threat.fromSam || threat.tCpa <= 0.35 || ai.threatNoticeTicks >= 4));
+  const canStartNew = ai.evadeTicks <= 0
+    && (ai.evadeCooldown <= 0 || (threat && threat.tCpa <= 0.45 && threat.cpaDist <= 58));
+
+  if (threatNoticed && canStartNew) {
+    ai.threatNoticeTicks = 0;
+    const deepPastFront = (bot.x - frontlineX) * forwardDir > 240;
+    if (deepPastFront || bot.hp < bot.maxHp * 0.6 || (state.tick % 3 === 0 && threat.fromSam)) {
+      ai.evadePattern = "break_turn";
+      ai.evadeTicks = HELI_BOT_CONFIG.evadeBreakTurnTicks;
+      ai.evadeDir = -forwardDir;
+    } else if (bot.y >= 115 && (threat.vy > 35 || threat.y >= bot.y)) {
+      ai.evadePattern = "drop";
+      ai.evadeTicks = HELI_BOT_CONFIG.evadeDropTicks;
+      ai.evadeDir = bot.dir;
+    } else {
+      ai.evadePattern = "climb";
+      ai.evadeTicks = HELI_BOT_CONFIG.evadeClimbTicks;
+      ai.evadeDir = bot.dir;
+    }
+  }
+
+  if (ai.evadeTicks <= 0) return false;
+
+  ai.evadeTicks -= 1;
+  if (ai.evadePattern === "drop") {
+    const brakeBuffer = Math.max(0, -(bot.vy || 0) * 0.16);
+    if (bot.y > HELI_BOT_CONFIG.evadeFloorY + brakeBuffer) inp.down = true;
+    else inp.up = true;
+    if (ai.evadeDir > 0) inp.right = true;
+    else inp.left = true;
+  } else if (ai.evadePattern === "climb") {
+    if (bot.y < CEILING_Y - 80) inp.up = true;
+    if (ai.evadeDir > 0) inp.right = true;
+    else inp.left = true;
+  } else {
+    // break_turn: pull back toward friendly airspace while jinking vertically
+    if (forwardDir > 0) inp.left = true;
+    else inp.right = true;
+    if (bot.y <= HELI_BOT_CONFIG.evadeFloorY + 25 && (bot.vy || 0) < -60) {
+      inp.up = true;
+    } else if (bot.y < 145) {
+      inp.up = true;
+    } else if (bot.y > HELI_BOT_CONFIG.evadeFloorY + 6) {
+      inp.down = true;
+    }
+  }
+
+  if (ai.evadeTicks <= 0) {
+    ai.evadeCooldown = HELI_BOT_CONFIG.evadeCooldownTicks;
+    ai.evadePattern = "none";
+  }
+  return true;
+}
+
+function isInAerialBattle(state, bot) {
+  const botCenterY = bot.y + 12;
+  for (const ep of Object.values(state.players)) {
+    if (ep.team === bot.team || !ep.alive || ep.crashing || ep.y <= 15) continue;
+    if (ep.y > 580 && Math.abs(ep.y - bot.y) > 420) continue;
+    const dist = Math.hypot(ep.x - bot.x, (ep.y + 22) - botCenterY);
+    if (dist <= HELI_BOT_CONFIG.aerialBattleRange) return true;
+    const closing = (bot.x - ep.x) * (ep.vx || 0) > 0 && Math.abs(ep.vx || 0) > 60;
+    if (dist <= 1050 && closing) return true;
+  }
+  for (const v2 of state.v2s) {
+    if (v2.team === bot.team || !v2.alive || v2.hp <= 0) continue;
+    if (Math.hypot(v2.x - bot.x, v2.y - botCenterY) <= HELI_BOT_CONFIG.aerialBattleRange) return true;
+  }
+  return false;
+}
+
+function selectAirTarget(state, bot, ai, frontlineX, forwardDir, enemyHqX) {
+  const botCenterY = bot.y + 12;
+  let best = null;
+  let bestScore = -Infinity;
+
+  for (const ep of Object.values(state.players)) {
+    if (ep.team === bot.team || !ep.alive || ep.crashing || ep.y <= 15) continue;
+    if (ep.y > 580 && Math.abs(ep.y - bot.y) > 420) continue;
+    const dist = Math.hypot(ep.x - bot.x, (ep.y + 22) - botCenterY);
+    const horizGap = Math.abs(ep.x - bot.x);
+    const behindEnemyFront = (ep.x - frontlineX) * forwardDir;
+    const hpRatio = ep.hp / Math.max(1, ep.maxHp);
+    const nearEnemyHq = Math.abs(ep.x - enemyHqX) < HELI_BOT_CONFIG.enemyHqNoChaseDist;
+    const alreadyEngaged = ai.engagedAirId === ep.id;
+
+    const maxVis = alreadyEngaged
+      ? HELI_BOT_CONFIG.airEngageHysteresisRange
+      : HELI_BOT_CONFIG.airVisualRange;
+    const normalEligible = dist <= maxVis && behindEnemyFront <= HELI_BOT_CONFIG.airMaxBehindFront;
+
+    const maxPursuitGap = (ep.aircraftType === "p47" && (ep.vx || 0) * forwardDir > 290)
+      ? HELI_BOT_CONFIG.airPursuitMaxGapFastP47
+      : HELI_BOT_CONFIG.airPursuitMaxGap;
+    const pursuitEligible = hpRatio <= HELI_BOT_CONFIG.airPursuitHpRatio
+      && bot.hp >= bot.maxHp * HELI_BOT_CONFIG.pursuitMinHpRatio
+      && (bot.aaWarningTicks || 0) <= 0
+      && !nearEnemyHq
+      && behindEnemyFront <= HELI_BOT_CONFIG.airPursuitMaxBehindFront
+      && horizGap <= maxPursuitGap;
+
+    if (!normalEligible && !pursuitEligible) continue;
+
+    let score = 600 - dist * 0.45 + (1 - hpRatio) * 180;
+    if (alreadyEngaged) score += 120;
+    if (ep.aircraftType === "heli") score += 45;
+    if (score > bestScore) {
+      bestScore = score;
+      best = {
+        id: ep.id,
+        kind: ep.aircraftType,
+        isAir: true,
+        isHighValue: true,
+        x: ep.x,
+        centerY: ep.y + 22,
+        vx: ep.vx || 0,
+        vy: ep.vy || 0,
+        hitHalfH: 28,
+        hp: ep.hp,
+        maxHp: ep.maxHp
+      };
+    }
+  }
+
+  for (const v2 of state.v2s) {
+    if (v2.team === bot.team || !v2.alive || v2.hp <= 0) continue;
+    const dist = Math.hypot(v2.x - bot.x, v2.y - botCenterY);
+    if (dist > HELI_BOT_CONFIG.airVisualRange) continue;
+    const score = 700 - dist * 0.4 + (ai.engagedAirId === v2.id ? 120 : 0);
+    if (score > bestScore) {
+      bestScore = score;
+      best = {
+        id: v2.id,
+        kind: "v2",
+        isAir: true,
+        isHighValue: true,
+        x: v2.x,
+        centerY: v2.y,
+        vx: v2.vx || 0,
+        vy: v2.vy || 0,
+        hitHalfH: 22,
+        hp: v2.hp,
+        maxHp: v2.maxHp
+      };
+    }
+  }
+
+  for (const b52 of state.b52s) {
+    if (b52.team === bot.team || !b52.alive || b52.hp <= 0) continue;
+    if (Math.abs(b52.y - bot.y) > 450) continue;
+    const dist = Math.hypot(b52.x - bot.x, b52.y - botCenterY);
+    if (dist > 1050) continue;
+    const score = 460 - dist * 0.3 + (ai.engagedAirId === b52.id ? 120 : 0);
+    if (score > bestScore) {
+      bestScore = score;
+      best = {
+        id: b52.id,
+        kind: "b52",
+        isAir: true,
+        isHighValue: true,
+        x: b52.x,
+        centerY: b52.y,
+        vx: b52.vx || 0,
+        vy: 0,
+        hitHalfH: 38,
+        hp: b52.hp,
+        maxHp: b52.maxHp
+      };
+    }
+  }
+
+  ai.engagedAirId = best ? best.id : null;
+  return best;
+}
+
+function selectGroundTarget(state, bot, front, forwardDir, botCfg = HELI_BOT_CONFIG) {
+  const enemyTeam = bot.team === "allied" ? "enemy" : "allied";
+  const skipAmb = !GROUND_BEHAVIOR_CONFIG.ambulanceTargetable;
+  const highValueKinds = new Set([
+    "aa_flak_truck",
+    "main_battle_tank",
+    "self_propelled_howitzer",
+    "supply_truck",
+    "bunker"
+  ]);
+
+  let best = null;
+  let bestScore = -Infinity;
+
+  const scoreCandidate = (cand, basePriority) => {
+    const behindFront = Math.max(0, (cand.x - front.enemyFrontX) * forwardDir);
+    const score = basePriority - 0.35 * Math.abs(cand.x - bot.x) - 0.30 * behindFront;
+    if (score > bestScore) {
+      bestScore = score;
+      best = cand;
+    }
+  };
+
+  for (const u of state.units) {
+    if (u.team === bot.team || u.hp <= 0 || (skipAmb && u.kind === "ambulance") || u.kind === "ambulance") continue;
+    if ((u.x - front.enemyFrontX) * forwardDir > botCfg.groundMaxBehindFront) continue;
+    const { hitH } = getGroundUnitHitbox(u.kind);
+    let pri = 170;
+    if (u.kind === "aa_flak_truck") pri = 560;
+    else if (u.kind === "self_propelled_howitzer") pri = 430;
+    else if (u.kind === "main_battle_tank") pri = 390;
+    else if (u.kind === "supply_truck") pri = 250;
+    else if (u.kind === "infantry") {
+      const nearCapturable = state.bunkers.some(
+        (b) => (b.owner === "neutral" || b.owner === bot.team) && Math.abs(b.x - u.x) <= 260
+      );
+      if (nearCapturable) pri = 290;
+    }
+    scoreCandidate({
+      id: u.id,
+      kind: u.kind,
+      isAir: false,
+      isHighValue: highValueKinds.has(u.kind),
+      x: u.x,
+      centerY: u.kind === "infantry" ? 15 : 26,
+      minHitY: 0,
+      hitH,
+      hp: u.hp,
+      maxHp: u.maxHp
+    }, pri);
+  }
+
+  for (const t of state.targets) {
+    if (t.team === bot.team || t.hp <= 0 || (skipAmb && t.kind === "ambulance") || t.kind === "ambulance") continue;
+    if ((t.x - front.enemyFrontX) * forwardDir > botCfg.groundMaxBehindFront) continue;
+    let pri = 280;
+    if (t.kind === "aa_flak_truck") pri = 560;
+    else if (t.kind === "self_propelled_howitzer") pri = 430;
+    else if (t.kind === "main_battle_tank") pri = 390;
+    scoreCandidate({
+      id: t.id,
+      kind: t.kind,
+      isAir: false,
+      isHighValue: highValueKinds.has(t.kind),
+      x: t.x,
+      centerY: 26,
+      minHitY: 0,
+      hitH: 52,
+      hp: t.hp,
+      maxHp: t.maxHp
+    }, pri);
+  }
+
+  for (const p of state.paratroopers) {
+    if (p.team === bot.team || p.y > 35) continue;
+    if ((p.x - front.enemyFrontX) * forwardDir > botCfg.groundMaxBehindFront) continue;
+    const nearCapturable = state.bunkers.some(
+      (b) => (b.owner === "neutral" || b.owner === bot.team) && Math.abs(b.x - p.x) <= 260
+    );
+    scoreCandidate({
+      id: p.id,
+      kind: "paratrooper",
+      isAir: false,
+      isHighValue: false,
+      x: p.x,
+      centerY: p.y + 12,
+      minHitY: Math.max(0, p.y - 4),
+      hitH: p.y + 28,
+      hp: p.hp ?? 40,
+      maxHp: p.maxHp ?? 40
+    }, nearCapturable ? 290 : 170);
+  }
+
+  for (const b of state.bunkers) {
+    if (b.owner !== enemyTeam || b.hp <= 0) continue;
+    if ((b.x - front.enemyFrontX) * forwardDir > botCfg.bunkerMaxBehindFront) continue;
+    const pri = b.hp < b.maxHp * 0.6 ? 440 : 320;
+    scoreCandidate({
+      id: b.id,
+      kind: "bunker",
+      isAir: false,
+      isHighValue: true,
+      x: b.x,
+      centerY: 38,
+      minHitY: 0,
+      hitH: 84,
+      hp: b.hp,
+      maxHp: b.maxHp
+    }, pri);
+  }
+
+  return best;
+}
+
+function isRayClearOfFriendliesAndCivilians(state, bot, muzzleX, muzzleY, vx, vy, targetT, targetX) {
+  if (Math.abs(vx) < 1e-3) return false;
+
+  for (const c of state.civilians) {
+    const objT = (c.x - muzzleX) / vx;
+    if (objT <= 0) continue;
+    if (objT <= targetT + 0.08 || Math.abs(c.x - targetX) <= 55) {
+      const yAt = muzzleY + vy * objT;
+      if (yAt >= -4 && yAt <= 36) return false;
+    }
+  }
+
+  for (const u of state.units) {
+    if (u.hp <= 0) continue;
+    const objT = (u.x - muzzleX) / vx;
+    if (objT <= 0) continue;
+    const { hitH } = getGroundUnitHitbox(u.kind);
+    if (u.kind === "ambulance") {
+      if (objT <= targetT + 0.08 || Math.abs(u.x - targetX) <= 55) {
+        const yAt = muzzleY + vy * objT;
+        if (yAt >= -4 && yAt <= hitH + 8) return false;
+      }
+    } else if (u.team === bot.team && objT < targetT) {
+      const yAt = muzzleY + vy * objT;
+      if (yAt >= -4 && yAt <= hitH + 8) return false;
+    }
+  }
+
+  for (const p of state.paratroopers) {
+    if (p.team !== bot.team) continue;
+    const objT = (p.x - muzzleX) / vx;
+    if (objT > 0 && objT < targetT) {
+      const yAt = muzzleY + vy * objT;
+      if (yAt >= Math.max(0, p.y - 6) && yAt <= p.y + 32) return false;
+    }
+  }
+
+  for (const b of state.bunkers) {
+    if (b.owner !== bot.team || b.hp <= 0) continue;
+    const objT = (b.x - muzzleX) / vx;
+    if (objT > 0 && objT < targetT) {
+      const yAt = muzzleY + vy * objT;
+      if (yAt >= -4 && yAt <= 92) return false;
+    }
+  }
+
+  return true;
+}
+
+function evaluateWeaponShot(bot, target, isMissile) {
+  const cfg = AIRCRAFT_CONFIG.heli;
+  const muzzleX = bot.x + bot.dir * (isMissile ? 34 : 38);
+  const muzzleY = bot.y + (isMissile ? 12 : 8);
+  const speed = isMissile ? cfg.missileSpeed : cfg.primarySpeed;
+  const angle = bot.pitch + (isMissile ? 0 : (cfg.primaryAngleDeg * Math.PI) / 180);
+  const vx = bot.dir * speed * Math.cos(angle) + (isMissile ? 0 : (bot.vx || 0) * 0.25);
+  const vy = speed * Math.sin(angle);
+
+  if (target.isAir) {
+    if ((target.x - muzzleX) * bot.dir <= 25) return null;
+    const relVx = vx - (target.vx || 0);
+    if ((target.x - muzzleX) * relVx <= 0) return null;
+    const t = (target.x - muzzleX) / relVx;
+    const maxFlightT = isMissile ? 1.05 : 1.15;
+    if (t <= 0 || t > maxFlightT) return null;
+    const projY = muzzleY + vy * t;
+    const targetY = target.centerY + (target.vy || 0) * t;
+    const tol = isMissile
+      ? (HELI_BOT_CONFIG.airSecondaryAimTolerance ?? (target.hitHalfH + 26))
+      : (HELI_BOT_CONFIG.airPrimaryAimTolerance ?? (target.hitHalfH + 62));
+    const rayAligned = Math.abs(projY - targetY) <= tol;
+    const bandAligned = !isMissile
+      && Math.abs(target.x - muzzleX) <= 520
+      && Math.abs(muzzleY - targetY) <= tol * 0.85;
+    if (!rayAligned && !bandAligned) return null;
+    return { t, muzzleX, muzzleY, vx, vy };
+  }
+
+  const maxRange = isMissile ? 780 : 650;
+  const dx = target.x - muzzleX;
+  if (dx * bot.dir <= 35 || Math.abs(dx) > maxRange) return null;
+  if (Math.abs(vx) < 1e-3) return null;
+  const t = dx / vx;
+  if (t <= 0 || t > 1.2) return null;
+  const projY = muzzleY + vy * t;
+  const minHitY = target.minHitY ?? 0;
+  const minBound = isMissile ? minHitY : minHitY - 4;
+  const maxBound = target.hitH + (isMissile ? 2 : 6);
+  if (projY < minBound || projY > maxBound) return null;
+  return { t, muzzleX, muzzleY, vx, vy };
+}
+
+function tryFireHeliWeapons(state, bot, inp, focusTarget) {
+  if (bot.turnTimer > 0 || bot.landedAtBase) return;
+
+  const candidates = [];
+  if (focusTarget) candidates.push(focusTarget);
+
+  for (const ep of Object.values(state.players)) {
+    if (ep.team === bot.team || !ep.alive || ep.crashing || ep.y <= 15) continue;
+    if (focusTarget && focusTarget.id === ep.id) continue;
+    if (Math.abs(ep.x - bot.x) <= 800) {
+      candidates.push({
+        id: ep.id,
+        kind: ep.aircraftType,
+        isAir: true,
+        isHighValue: true,
+        x: ep.x,
+        centerY: ep.y + 22,
+        vx: ep.vx || 0,
+        vy: ep.vy || 0,
+        hitHalfH: 28
+      });
+    }
+  }
+
+  for (const v2 of state.v2s) {
+    if (v2.team === bot.team || !v2.alive || v2.hp <= 0) continue;
+    if (focusTarget && focusTarget.id === v2.id) continue;
+    if (Math.abs(v2.x - bot.x) <= 800) {
+      candidates.push({
+        id: v2.id,
+        kind: "v2",
+        isAir: true,
+        isHighValue: true,
+        x: v2.x,
+        centerY: v2.y,
+        vx: v2.vx || 0,
+        vy: v2.vy || 0,
+        hitHalfH: 22
+      });
+    }
+  }
+
+  const skipAmb = !GROUND_BEHAVIOR_CONFIG.ambulanceTargetable;
+  const highValueGround = new Set(["aa_flak_truck", "main_battle_tank", "self_propelled_howitzer", "supply_truck", "bunker"]);
+  for (const u of state.units) {
+    if (u.team === bot.team || u.hp <= 0 || (skipAmb && u.kind === "ambulance") || u.kind === "ambulance") continue;
+    if (focusTarget && focusTarget.id === u.id) continue;
+    if ((u.x - bot.x) * bot.dir > 35 && Math.abs(u.x - bot.x) <= 780) {
+      const { hitH } = getGroundUnitHitbox(u.kind);
+      candidates.push({
+        id: u.id,
+        kind: u.kind,
+        isAir: false,
+        isHighValue: highValueGround.has(u.kind),
+        x: u.x,
+        centerY: u.kind === "infantry" ? 15 : 26,
+        minHitY: 0,
+        hitH
+      });
+    }
+  }
+
+  for (const t of state.targets) {
+    if (t.team === bot.team || t.hp <= 0 || (skipAmb && t.kind === "ambulance") || t.kind === "ambulance") continue;
+    if (focusTarget && focusTarget.id === t.id) continue;
+    if ((t.x - bot.x) * bot.dir > 35 && Math.abs(t.x - bot.x) <= 780) {
+      candidates.push({
+        id: t.id,
+        kind: t.kind,
+        isAir: false,
+        isHighValue: highValueGround.has(t.kind),
+        x: t.x,
+        centerY: 26,
+        minHitY: 0,
+        hitH: 52
+      });
+    }
+  }
+
+  for (const b of state.bunkers) {
+    if (b.owner === "neutral" || b.owner === bot.team || b.hp <= 0) continue;
+    if (focusTarget && focusTarget.id === b.id) continue;
+    if ((b.x - bot.x) * bot.dir > 35 && Math.abs(b.x - bot.x) <= 780) {
+      candidates.push({
+        id: b.id,
+        kind: "bunker",
+        isAir: false,
+        isHighValue: true,
+        x: b.x,
+        centerY: 38,
+        minHitY: 0,
+        hitH: 84
+      });
+    }
+  }
+
+  const ai = ensureHeliBotAi(bot);
+  let airShotReady = false;
+
+  for (const tgt of candidates) {
+    if (tgt.isAir) {
+      const pShot = evaluateWeaponShot(bot, tgt, false);
+      const pClear = pShot && isRayClearOfFriendliesAndCivilians(state, bot, pShot.muzzleX, pShot.muzzleY, pShot.vx, pShot.vy, pShot.t, tgt.x);
+      const mShot = (bot.secondaryAmmo > 0 && tgt.isHighValue) ? evaluateWeaponShot(bot, tgt, true) : null;
+      const mClear = mShot && isRayClearOfFriendliesAndCivilians(state, bot, mShot.muzzleX, mShot.muzzleY, mShot.vx, mShot.vy, mShot.t, tgt.x);
+      if (pClear || mClear) {
+        airShotReady = true;
+        if (!inp.firePrimary && pClear && ai.airAimLockTicks + 1 >= ai.airFireDelayTicks) {
+          inp.firePrimary = true;
+          ai.airPrimaryBurstTicks = HELI_BOT_CONFIG.airPrimaryBurstHoldTicks;
+        }
+        if (!inp.fireSecondary && mClear && ai.airAimLockTicks + 1 >= ai.airFireDelayTicks + HELI_BOT_CONFIG.airMissileReactBonusTicks) {
+          inp.fireSecondary = true;
+        }
+      }
+      continue;
+    }
+
+    if (!inp.firePrimary) {
+      const pShot = evaluateWeaponShot(bot, tgt, false);
+      if (pShot && isRayClearOfFriendliesAndCivilians(state, bot, pShot.muzzleX, pShot.muzzleY, pShot.vx, pShot.vy, pShot.t, tgt.x)) {
+        inp.firePrimary = true;
+      }
+    }
+    if (!inp.fireSecondary && bot.secondaryAmmo > 0 && tgt.isHighValue) {
+      const mShot = evaluateWeaponShot(bot, tgt, true);
+      if (mShot && isRayClearOfFriendliesAndCivilians(state, bot, mShot.muzzleX, mShot.muzzleY, mShot.vx, mShot.vy, mShot.t, tgt.x)) {
+        inp.fireSecondary = true;
+      }
+    }
+    if (inp.firePrimary && (inp.fireSecondary || bot.secondaryAmmo <= 0)) break;
+  }
+
+  if ((ai.airPrimaryBurstTicks || 0) > 0) {
+    ai.airPrimaryBurstTicks -= 1;
+    if (!inp.firePrimary) {
+      const muzzleX = bot.x + bot.dir * 38;
+      const muzzleY = bot.y + 8;
+      const speed = AIRCRAFT_CONFIG.heli.primarySpeed;
+      const vx = bot.dir * speed * Math.cos(bot.pitch) + (bot.vx || 0) * 0.25;
+      const vy = speed * Math.sin(bot.pitch);
+      const keepSpraying = candidates.some((c) => {
+        if (!c.isAir) return false;
+        const dx = (c.x - muzzleX) * bot.dir;
+        if (dx <= 20 || dx > 780 || Math.abs(c.centerY - muzzleY) > 140) return false;
+        const t = Math.max(0.05, (c.x - muzzleX) / vx);
+        return isRayClearOfFriendliesAndCivilians(state, bot, muzzleX, muzzleY, vx, vy, t, c.x);
+      });
+      if (keepSpraying) inp.firePrimary = true;
+    }
+  }
+
+  if (airShotReady) {
+    ai.airAimLockTicks = Math.min(60, (ai.airAimLockTicks || 0) + 1);
+  } else {
+    ai.airAimLockTicks = Math.max(0, (ai.airAimLockTicks || 0) - 1);
+    if (ai.airAimLockTicks === 0) {
+      const span = HELI_BOT_CONFIG.airFireReactMaxTicks - HELI_BOT_CONFIG.airFireReactMinTicks + 1;
+      ai.airFireDelayTicks = HELI_BOT_CONFIG.airFireReactMinTicks
+        + Math.floor(botHash01(bot.id, state.tick, 41) * span);
+    }
+  }
+}
+
+function hasFriendlyBunkerCaptureInProgress(state, team, bunkerX, forwardDir) {
+  for (const p of state.paratroopers) {
+    if (p.team !== team) continue;
+    const delta = (p.x - bunkerX) * forwardDir;
+    if (delta >= -180 && delta <= 22) return true;
+  }
+  for (const u of state.units) {
+    if (u.team !== team || u.hp <= 0 || u.kind !== "infantry") continue;
+    const delta = (u.x - bunkerX) * forwardDir;
+    if (delta >= -180 && delta <= 22) return true;
+  }
+  return false;
+}
+
+function selectOpportunisticBunker(state, bot, frontlineX, forwardDir) {
+  const infCount = bot.passengers.filter((p) => p === "infantry").length;
+  if (infCount === 0) return null;
+
+  const hasNearbyGroundEnemies = state.units.some(
+    (u) => u.team !== bot.team && u.hp > 0 && u.kind !== "ambulance" && Math.abs(u.x - bot.x) <= 1100
+  ) || state.targets.some(
+    (t) => t.team !== bot.team && t.hp > 0 && t.kind !== "ambulance" && Math.abs(t.x - bot.x) <= 1100
+  );
+
+  let best = null;
+  let bestDist = Infinity;
+  for (const b of state.bunkers) {
+    if (b.owner !== "neutral" && !(b.owner !== bot.team && b.hp <= 0)) continue;
+    if ((b.x - frontlineX) * forwardDir > 700) continue;
+    if (hasFriendlyBunkerCaptureInProgress(state, bot.team, b.x, forwardDir)) continue;
+    const aaNearby = state.units.some(
+      (u) => u.team !== bot.team && u.hp > 0 && u.kind === "aa_flak_truck" && Math.abs(u.x - b.x) <= HELI_BOT_CONFIG.bunkerAaDangerDist
+    );
+    if (aaNearby) continue;
+
+    const d = Math.abs(b.x - bot.x);
+    if (d > HELI_BOT_CONFIG.bunkerDetourMaxDist && hasNearbyGroundEnemies) continue;
+    if (d < bestDist) {
+      bestDist = d;
+      best = b;
+    }
+  }
+  return best;
+}
+
+function selectOpportunisticCivilian(state, bot, frontlineX, forwardDir, enemyHqX, maxDist) {
+  if (bot.passengers.length >= bot.cabinCapacity) return null;
+
+  let best = null;
+  let bestDist = Infinity;
+  for (const c of state.civilians) {
+    if (Math.abs(c.x - enemyHqX) <= 1400) continue;
+    if ((c.x - frontlineX) * forwardDir > 250) continue;
+
+    const enemyNear = state.units.some(
+      (u) => u.team !== bot.team && u.hp > 0 && u.kind !== "ambulance" && Math.abs(u.x - c.x) <= HELI_BOT_CONFIG.civEnemyDangerDist
+    ) || state.targets.some(
+      (t) => t.team !== bot.team && t.hp > 0 && t.kind !== "ambulance" && Math.abs(t.x - c.x) <= HELI_BOT_CONFIG.civEnemyDangerDist
+    );
+    if (enemyNear) continue;
+
+    const ambClaimed = state.units.some(
+      (u) => u.team === bot.team
+        && u.hp > 0
+        && u.kind === "ambulance"
+        && (u.passengers?.length || 0) < (u.cabinCapacity || 6)
+        && Math.abs(u.x - c.x) <= HELI_BOT_CONFIG.civAmbulanceClaimDist
+    );
+    if (ambClaimed) continue;
+
+    const d = Math.abs(c.x - bot.x);
+    if (d <= maxDist && d < bestDist) {
+      bestDist = d;
+      best = c;
+    }
+  }
+  return best;
+}
+
+function flyHeliToBase(state, bot, inp, homeX, ai, front, forwardDir) {
+  if (ai.rtbReason !== "hp" && bot.hp >= bot.maxHp * 0.5) {
+    const enRouteCiv = selectOpportunisticCivilian(
+      state,
+      bot,
+      front.frontlineX,
+      forwardDir,
+      front.enemyHqX,
+      HELI_BOT_CONFIG.civReturnDetourMaxDist
+    );
+    if (enRouteCiv) {
+      const betweenBotAndHome = (enRouteCiv.x - homeX) * (bot.x - homeX) >= 0
+        && Math.abs(enRouteCiv.x - homeX) <= Math.abs(bot.x - homeX) + 120;
+      if (betweenBotAndHome) {
+        const dxCiv = Math.abs(bot.x - enRouteCiv.x);
+        steerHeliTo(bot, inp, enRouteCiv.x, dxCiv <= 85 ? 8 : 90, {
+          deadzoneX: 24,
+          keepFacing: dxCiv <= 35
+        });
+        return;
+      }
+    }
+  }
+
+  const distHome = Math.abs(bot.x - homeX);
+  if (distHome <= 120) {
+    if (distHome > 70 && Math.abs(bot.vx) < 90) {
+      steerHeliTo(bot, inp, homeX, 0, { deadzoneX: 24, skipVertical: true });
+    }
+    if (bot.vy < -70) inp.up = true;
+    else if (bot.vy > -35) inp.down = true;
+  } else {
+    const approachY = distHome <= 280 ? 65 : 140;
+    steerHeliTo(bot, inp, homeX, approachY, { deadzoneX: 28 });
+  }
+}
+
+function updateAirTargetPerception(state, bot, ai, airTarget, botCfg = HELI_BOT_CONFIG) {
+  const rawX = airTarget.x;
+  const rawY = (airTarget.kind === "heli" || airTarget.kind === "p47")
+    ? (airTarget.centerY - 22)
+    : (airTarget.centerY - 10);
+  const rawVx = airTarget.vx || 0;
+  const rawVy = airTarget.vy || 0;
+
+  if (ai.trackedAirId !== airTarget.id) {
+    ai.trackedAirId = airTarget.id;
+    const initNoise = (botHash01(bot.id, state.tick, 1) - 0.5) * 26;
+    ai.trackedAirX = rawX;
+    ai.trackedAirY = rawY + initNoise;
+    ai.trackedAirVx = rawVx * 0.75;
+    ai.trackedAirVy = 0;
+    ai.pendingAirX = rawX;
+    ai.pendingAirY = rawY;
+    ai.pendingAirVx = rawVx;
+    ai.pendingAirVy = rawVy;
+    ai.hasPendingAir = true;
+    const span = botCfg.airReactionMaxTicks - botCfg.airReactionMinTicks + 1;
+    ai.senseCooldown = botCfg.airReactionMinTicks + Math.floor(botHash01(bot.id, state.tick, 2) * span);
+    let wander = (botHash01(bot.id, state.tick, 3) - 0.5) * 2 * botCfg.airAimWanderMaxY;
+    if (Math.abs(wander) < 4) wander = wander >= 0 ? 6 : -6;
+    ai.aimWanderY = wander;
+    ai.aimWanderTicks = 35 + Math.floor(botHash01(bot.id, state.tick, 4) * 45);
+    ai.airTactic = "none";
+    ai.airTacticTicks = 0;
+    ai.airThreatTicks = 0;
+    ai.airAimLockTicks = 0;
+    return;
+  }
+
+  ai.trackedAirX += ai.trackedAirVx * DT;
+  ai.trackedAirY += ai.trackedAirVy * DT * 0.35;
+
+  ai.aimWanderTicks -= 1;
+  if (ai.aimWanderTicks <= 0) {
+    let wander = (botHash01(bot.id, state.tick, 5) - 0.5) * 2 * botCfg.airAimWanderMaxY;
+    if (Math.abs(wander) < 4) wander = wander >= 0 ? 6 : -6;
+    ai.aimWanderY = wander;
+    ai.aimWanderTicks = 35 + Math.floor(botHash01(bot.id, state.tick, 6) * 45);
+  }
+
+  ai.senseCooldown -= 1;
+  if (ai.senseCooldown <= 0) {
+    if (ai.hasPendingAir) {
+      ai.trackedAirX = ai.pendingAirX;
+      ai.trackedAirY = ai.trackedAirY * 0.25 + ai.pendingAirY * 0.75;
+      ai.trackedAirVx = ai.trackedAirVx * 0.30 + ai.pendingAirVx * 0.70;
+      ai.trackedAirVy = ai.trackedAirVy * 0.35 + ai.pendingAirVy * 0.65;
+    }
+    const yNoise = (botHash01(bot.id, state.tick, 7) - 0.5) * 24;
+    const vyNoise = (botHash01(bot.id, state.tick, 8) - 0.5) * 40;
+    ai.pendingAirX = rawX;
+    ai.pendingAirY = rawY + yNoise;
+    ai.pendingAirVx = rawVx;
+    ai.pendingAirVy = rawVy + vyNoise;
+    ai.hasPendingAir = true;
+    const span = botCfg.airReactionMaxTicks - botCfg.airReactionMinTicks + 1;
+    ai.senseCooldown = botCfg.airReactionMinTicks + Math.floor(botHash01(bot.id, state.tick, 9) * span);
+  }
+}
+
+function isInEnemyAirThreatCone(state, bot, airTarget) {
+  const ep = state.players[airTarget.id];
+  if (!ep || !ep.alive || ep.crashing || ep.turnTimer > 0) return false;
+  const dx = (bot.x - ep.x) * ep.dir;
+  if (dx <= 20 || dx > 850) return false;
+  const noseAngle = ep.effectivePitch ?? ep.pitch ?? 0;
+  const muzzleY = ep.y + (ep.aircraftType === "heli" ? 8 : 18);
+  const aimYAtBot = muzzleY + dx * Math.tan(noseAngle);
+  return Math.abs((bot.y + 22) - aimYAtBot) <= 78;
+}
+
+function isBehindAirTarget(state, bot, airTarget) {
+  const ep = state.players[airTarget.id];
+  return Boolean(ep && (bot.x - ep.x) * ep.dir < -30);
+}
+
+function chooseAirCombatTactic(state, bot, ai, airTarget, inCone, onTail) {
+  if (airTarget.kind === "v2" || airTarget.kind === "b52") {
+    ai.airTactic = "press_weave";
+    ai.airTacticPhase = "commit";
+    ai.airPassDir = ai.trackedAirX >= bot.x ? 1 : -1;
+    ai.airWeaveSpeed = 2.6 + botHash01(bot.id, state.tick, 32) * 1.4;
+    ai.airTacticTicks = HELI_BOT_CONFIG.airTacticMinTicks;
+    return;
+  }
+
+  const toTargetDir = ai.trackedAirX >= bot.x ? 1 : -1;
+  const horizDist = Math.abs(ai.trackedAirX - bot.x);
+  const closingSpeed = ((bot.vx || 0) - ai.trackedAirVx) * toTargetDir;
+  const ownMomentum = (bot.vx || 0) * toTargetDir;
+  const isP47 = airTarget.kind === "p47";
+  const isHeli = airTarget.kind === "heli";
+  const enemyLowHp = (airTarget.hp / Math.max(1, airTarget.maxHp)) <= 0.30;
+  const prevTactic = ai.airTactic;
+
+  const scores = {
+    slash_pass: 52
+      + (isP47 && !onTail ? 52 : 0)
+      + (closingSpeed > 220 ? 36 : 0)
+      + (ownMomentum > 120 ? 22 : 0)
+      + (inCone ? 26 : 0)
+      + (horizDist < 520 && !onTail ? 18 : 0)
+      + (ai.trackedAirY > 420 ? -45 : 0)
+      + (onTail && horizDist > 260 ? -30 : 0)
+      + (prevTactic === "slash_pass" ? -18 : 0)
+      + botHash01(bot.id, state.tick, 21) * 30,
+
+    under_cut: 30
+      + (isP47 && !onTail ? 42 : 0)
+      + (closingSpeed > 240 ? 28 : 0)
+      + (inCone ? 34 : 0)
+      + (ai.trackedAirVy > 50 ? 35 : 0)
+      + (bot.hp < bot.maxHp * 0.65 || bot.secondaryAmmo === 0 ? 20 : 0)
+      + (ai.trackedAirY >= 210 ? 28 : 0)
+      + (ai.trackedAirY < 130 ? -95 : 0)
+      + (onTail ? -50 : 0)
+      + (prevTactic === "under_cut" ? -22 : 0)
+      + botHash01(bot.id, state.tick, 22) * 30,
+
+    press_weave: 50
+      + (onTail ? 58 : 0)
+      + (enemyLowHp ? 28 : 0)
+      + (isHeli && closingSpeed <= 180 ? 28 : 0)
+      + (isP47 && !onTail && closingSpeed > 180 ? -75 : 0)
+      + (closingSpeed > 320 ? -35 : 0)
+      + (inCone && ai.airThreatTicks >= 18 ? -38 : 0)
+      + (prevTactic === "press_weave" ? -15 : 0)
+      + botHash01(bot.id, state.tick, 23) * 30,
+
+    feint_pop: 22
+      + (inCone && horizDist <= 560 && Math.abs(bot.vx || 0) < 130 ? 58 : 0)
+      + (bot.hp < bot.maxHp * 0.6 && inCone ? 24 : 0)
+      + (onTail ? -60 : 0)
+      + (prevTactic === "feint_pop" ? -35 : 0)
+      + botHash01(bot.id, state.tick, 24) * 30
+  };
+
+  let best = "press_weave";
+  let bestScore = -Infinity;
+  for (const [tactic, sc] of Object.entries(scores)) {
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = tactic;
+    }
+  }
+
+  ai.airTactic = best;
+  ai.airTacticPhase = "commit";
+  ai.airPassDir = toTargetDir;
+  ai.airPassTargetY = clamp(ai.trackedAirY, 80, 380);
+  ai.airPassOvershoot = HELI_BOT_CONFIG.airPassThroughDist
+    + Math.floor((botHash01(bot.id, state.tick, 31) - 0.5) * 90);
+  ai.airFeintSign = ai.trackedAirY > 240 ? -1 : 1;
+  ai.airWeaveSpeed = 2.6 + botHash01(bot.id, state.tick, 32) * 1.4;
+  ai.airTacticTicks = best === "feint_pop"
+    ? (28 + Math.floor(botHash01(bot.id, state.tick, 33) * 16))
+    : (HELI_BOT_CONFIG.airTacticMinTicks
+      + Math.floor(botHash01(bot.id, state.tick, 33) * (HELI_BOT_CONFIG.airTacticMaxTicks - HELI_BOT_CONFIG.airTacticMinTicks)));
+}
+
+function executeAirCombat(state, bot, ai, inp, airTarget) {
+  updateAirTargetPerception(state, bot, ai, airTarget);
+
+  const inCone = isInEnemyAirThreatCone(state, bot, airTarget);
+  const onTail = isBehindAirTarget(state, bot, airTarget);
+  ai.airThreatTicks = inCone ? ai.airThreatTicks + 1 : Math.max(0, ai.airThreatTicks - 2);
+
+  const dirToTracked = ai.trackedAirX >= bot.x ? 1 : -1;
+  const closingSpeed = ((bot.vx || 0) - ai.trackedAirVx) * dirToTracked;
+  const shouldSwitchPress = ai.airTactic === "press_weave"
+    && ((airTarget.kind === "p47" && !onTail && closingSpeed > 220) || ai.airThreatTicks >= 24);
+
+  if (ai.airTactic === "none" || ai.airTacticTicks <= 0 || shouldSwitchPress) {
+    chooseAirCombatTactic(state, bot, ai, airTarget, inCone, onTail);
+  }
+  ai.airTacticTicks -= 1;
+
+  const vOpts = { yTolDown: 16, yTolUp: 18 };
+  const maxAirY = airTarget.kind === "v2" ? CEILING_Y - 50 : 520;
+
+  if (ai.airTactic === "slash_pass") {
+    if (ai.airTacticPhase === "commit") {
+      const dxToTracked = (ai.trackedAirX - bot.x) * ai.airPassDir;
+      const slashOffset = dxToTracked > 40
+        ? clamp(dxToTracked * 0.20, 52, 105)
+        : HELI_BOT_CONFIG.airSlashOffsetY;
+      const refY = (ai.airPassTargetY || ai.trackedAirY) * 0.5 + ai.trackedAirY * 0.5;
+      const goalY = clamp(refY + slashOffset + ai.aimWanderY * 0.6, 85, 480);
+      steerHeliTo(bot, inp, bot.x + ai.airPassDir * 600, goalY, {
+        ...vOpts,
+        forceDir: ai.airPassDir
+      });
+      if ((bot.x - airTarget.x) * ai.airPassDir >= ai.airPassOvershoot) {
+        ai.airTacticPhase = "reengage";
+        ai.airTacticTicks = Math.min(ai.airTacticTicks, 40);
+      }
+    } else {
+      const goalY = clamp(ai.trackedAirY + ai.aimWanderY, 75, 480);
+      steerHeliTo(bot, inp, ai.trackedAirX, goalY, {
+        ...vOpts,
+        forceDir: -ai.airPassDir
+      });
+      if (bot.dir === -ai.airPassDir && bot.turnTimer === 0) {
+        ai.airTacticTicks = 0;
+      }
+    }
+    return;
+  }
+
+  if (ai.airTactic === "under_cut") {
+    if (ai.airTacticPhase === "commit") {
+      const goalY = clamp(
+        ai.trackedAirY - HELI_BOT_CONFIG.airUndercutOffsetY + ai.aimWanderY * 0.4,
+        64,
+        420
+      );
+      steerHeliTo(bot, inp, bot.x + ai.airPassDir * 600, goalY, {
+        ...vOpts,
+        forceDir: ai.airPassDir
+      });
+      if ((bot.x - airTarget.x) * ai.airPassDir >= ai.airPassOvershoot) {
+        ai.airTacticPhase = "reengage";
+        ai.airTacticTicks = Math.min(ai.airTacticTicks, 40);
+      }
+    } else {
+      const goalY = clamp(ai.trackedAirY + 15 + ai.aimWanderY, 75, 480);
+      steerHeliTo(bot, inp, ai.trackedAirX, goalY, {
+        ...vOpts,
+        forceDir: -ai.airPassDir
+      });
+      if (bot.dir === -ai.airPassDir && bot.turnTimer === 0) {
+        ai.airTacticTicks = 0;
+      }
+    }
+    return;
+  }
+
+  if (ai.airTactic === "feint_pop") {
+    const goalY = clamp(ai.trackedAirY + ai.airFeintSign * 95, 68, 480);
+    steerHeliTo(bot, inp, ai.trackedAirX, goalY, {
+      ...vOpts,
+      forceDir: dirToTracked
+    });
+    return;
+  }
+
+  // "press_weave": active mid-to-close pursuit with sinusoidal vertical weave & brief firing pauses
+  ai.airWeavePhase += ai.airWeaveSpeed * DT;
+  const dx = (ai.trackedAirX - bot.x) * bot.dir;
+
+  if (ai.airBurstPauseTicks > 0) {
+    ai.airBurstPauseTicks -= 1;
+  } else if (
+    dx >= HELI_BOT_CONFIG.airPressMinRange
+    && dx <= HELI_BOT_CONFIG.airPressMaxRange
+    && botHash01(bot.id, state.tick, 35) < 0.04
+  ) {
+    ai.airBurstPauseTicks = 20 + Math.floor(botHash01(bot.id, state.tick, 36) * 16);
+  }
+
+  const weaveScale = ai.airBurstPauseTicks > 0 ? 0.35 : 1.0;
+  const weaveY = Math.sin(ai.airWeavePhase) * HELI_BOT_CONFIG.airWeaveAmpY * weaveScale;
+  const baseY = airTarget.kind === "heli" ? ai.trackedAirY : (ai.trackedAirY + 10);
+  const goalY = clamp(baseY + weaveY + ai.aimWanderY, 68, maxAirY);
+
+  if (bot.dir !== dirToTracked) {
+    steerHeliTo(bot, inp, ai.trackedAirX, goalY, { ...vOpts, forceDir: dirToTracked });
+  } else if (dx < 110 && !onTail) {
+    ai.airTactic = "slash_pass";
+    ai.airTacticPhase = "commit";
+    ai.airPassDir = bot.dir;
+    ai.airTacticTicks = Math.max(ai.airTacticTicks, 45);
+    steerHeliTo(bot, inp, bot.x + bot.dir * 600, clamp(ai.trackedAirY + HELI_BOT_CONFIG.airSlashOffsetY, 85, 500), {
+      ...vOpts,
+      forceDir: bot.dir
+    });
+  } else if (dx > HELI_BOT_CONFIG.airPressMaxRange) {
+    steerHeliTo(bot, inp, ai.trackedAirX, goalY, { ...vOpts, deadzoneX: 25 });
+  } else if (dx < HELI_BOT_CONFIG.airPressMinRange || ai.airBurstPauseTicks > 0) {
+    steerHeliTo(bot, inp, ai.trackedAirX, goalY, { ...vOpts, keepFacing: true, deadzoneX: 9999 });
+  } else {
+    steerHeliTo(bot, inp, ai.trackedAirX, goalY, { ...vOpts, deadzoneX: 30 });
+  }
+}
+
+function computeHeliBotInput(state, bot) {
   const inp = {
     left: false,
     right: false,
@@ -3357,191 +4542,1035 @@ export function computeBotPilotInput(state, bot) {
     fireSecondary: false
   };
 
+  const ai = ensureHeliBotAi(bot);
   const forwardDir = bot.team === "allied" ? 1 : -1;
-  const enemyTeam = bot.team === "allied" ? "enemy" : "allied";
+  const front = computeHeliFrontline(state, bot.team);
   const homeX = BASES[bot.team].padCenterX;
-  const enemyHqX = BASES[enemyTeam].hqX;
+  const civCount = bot.passengers.filter((p) => p === "civilian").length;
+  const infCount = bot.passengers.filter((p) => p === "infantry").length;
 
-  if (bot.aircraftType === "heli") {
-    const civCount = bot.passengers.filter((p) => p === "civilian").length;
-    const infCount = bot.passengers.filter((p) => p === "infantry").length;
+  // 1. Base refit & scramble check
+  if (bot.landedAtBase) {
+    ai.mode = "base";
+    ai.trackedAirId = null;
+    ai.airTactic = "none";
+    ai.airTacticTicks = 0;
+    const scrambleThreat = Object.values(state.players).some(
+      (ep) => ep.team !== bot.team
+        && ep.alive
+        && !ep.crashing
+        && ep.y > 15
+        && Math.hypot(ep.x - bot.x, ep.y - bot.y) <= HELI_BOT_CONFIG.scrambleEnemyDist
+    );
+    const canScramble = scrambleThreat && bot.hp >= bot.maxHp * 0.5 && bot.secondaryAmmo >= 2;
+    const readyToLaunch = bot.hp >= bot.maxHp * HELI_BOT_CONFIG.baseReadyHpRatio
+      && bot.secondaryAmmo >= bot.maxSecondary;
 
-    if (bot.landedAtBase) {
-      if (bot.hp < bot.maxHp * 0.9) return inp;
+    if (!canScramble && !readyToLaunch) {
       if (infCount < 4 && bot.passengers.length < bot.cabinCapacity && state.tick % 15 === 0) {
         handlePlayerUtility(state, bot.id);
-        return inp;
       }
-      inp.up = true;
       return inp;
     }
 
-    let goalX = 0;
-    let goalY = 140;
-    let landingAtPad = false;
-
-    const shouldReturn = bot.hp < bot.maxHp * 0.35
-      || civCount >= 2
-      || (civCount >= 1 && state.civilians.length === 0)
-      || (infCount === 0 && bot.secondaryAmmo === 0);
-
-    if (shouldReturn) {
-      goalX = homeX;
-      if (Math.abs(bot.x - homeX) <= 90) {
-        landingAtPad = true;
-        if (bot.vy < -32) inp.up = true;
-        else if (bot.vy > -24) inp.down = true;
-      }
-    } else {
-      const safeCivs = state.civilians
-        .filter((c) => Math.abs(c.x - enemyHqX) > 1400)
-        .sort((a, b) => Math.abs(a.x - bot.x) - Math.abs(b.x - bot.x));
-
-      if (safeCivs.length > 0 && bot.passengers.length < bot.cabinCapacity) {
-        const civ = safeCivs[0];
-        goalX = civ.x;
-        goalY = Math.abs(bot.x - civ.x) <= 70 ? 8 : 110;
-      } else {
-        const unowned = state.bunkers
-          .filter((b) => b.owner === "neutral" || b.hp <= 0)
-          .sort((a, b) => Math.abs(a.x - bot.x) - Math.abs(b.x - bot.x));
-
-        if (infCount > 0 && unowned.length > 0) {
-          const b = unowned[0];
-          goalX = b.x;
-          goalY = 135;
-          if (Math.abs(bot.x - b.x) <= 45 && bot.y > 40 && state.tick % 20 === 0) {
-            handlePlayerUtility(state, bot.id);
-          }
-        } else {
-          // Frontline combat support
-          let target = null;
-          let bestDist = Infinity;
-          const skipAmb = !GROUND_BEHAVIOR_CONFIG.ambulanceTargetable;
-          for (const u of state.units) {
-            if (u.team === bot.team || u.hp <= 0 || (skipAmb && u.kind === "ambulance")) continue;
-            const d = Math.abs(u.x - bot.x);
-            if (d < bestDist) { bestDist = d; target = { x: u.x, y: 20, isAir: false }; }
-          }
-          for (const t of state.targets) {
-            if (t.team === bot.team || t.hp <= 0) continue;
-            const d = Math.abs(t.x - bot.x);
-            if (d < bestDist) { bestDist = d; target = { x: t.x, y: 20, isAir: false }; }
-          }
-          for (const b of state.bunkers) {
-            if (b.owner !== enemyTeam || b.hp <= 0) continue;
-            const d = Math.abs(b.x - bot.x);
-            if (d < bestDist) { bestDist = d; target = { x: b.x, y: 36, isAir: false }; }
-          }
-          for (const ep of Object.values(state.players)) {
-            if (ep.team === bot.team || !ep.alive || ep.y <= 15) continue;
-            const d = Math.abs(ep.x - bot.x);
-            if (d < bestDist) { bestDist = d; target = { x: ep.x, y: ep.y, isAir: true }; }
-          }
-
-          if (target) {
-            goalX = target.x - forwardDir * 180;
-            goalY = target.isAir ? clamp(target.y, 80, 420) : 125;
-            const dxForward = (target.x - bot.x) * bot.dir;
-            if (dxForward > 0) {
-              if (dxForward <= 380 && (target.isAir || bot.y <= 150)) {
-                inp.firePrimary = true;
-              }
-              if (bot.secondaryAmmo > 0 && dxForward <= 650 && (target.isAir ? Math.abs(target.y - bot.y) < 85 : bot.y <= 180)) {
-                inp.fireSecondary = true;
-              }
-            }
-          } else {
-            goalX = 0;
-            goalY = 140;
-          }
-        }
-      }
+    if (!canScramble && infCount < 4 && bot.passengers.length < bot.cabinCapacity && state.tick % 15 === 0) {
+      handlePlayerUtility(state, bot.id);
+      return inp;
     }
 
-    if (goalX - bot.x > 25) inp.right = true;
-    else if (goalX - bot.x < -25) inp.left = true;
-
-    if (!landingAtPad) {
-      if (bot.y < goalY - 12) inp.up = true;
-      else if (bot.y > goalY + 18) inp.down = true;
-    }
+    ai.rtbCommitted = false;
+    ai.rtbReason = "none";
+    ai.strafePhase = "approach";
+    inp.up = true;
     return inp;
   }
 
-  // P-47 Thunderbolt Bot Pilot
-  const cfg = AIRCRAFT_CONFIG.p47;
-  if (bot.y <= 2) {
+  // 2. Zero-detour en-route paratrooper drop over capturable bunkers
+  if (bot.y > 40 && infCount > 0 && ai.evadeTicks <= 0) {
+    const passBunker = state.bunkers.find((b) => {
+      if (b.owner !== "neutral" && !(b.owner !== bot.team && b.hp <= 0)) return false;
+      const delta = (bot.x - b.x) * forwardDir;
+      return delta >= -95 && delta <= 12 && !hasFriendlyBunkerCaptureInProgress(state, bot.team, b.x, forwardDir);
+    });
+    if (passBunker) {
+      handlePlayerUtility(state, bot.id);
+    }
+  }
+
+  // 3. Threat evasion
+  if (updateHeliEvasion(state, bot, ai, inp, front.frontlineX, forwardDir)) {
+    ai.mode = "evade";
+    ai.trackedAirId = null;
+    ai.airTactic = "none";
+    ai.airTacticTicks = 0;
+    tryFireHeliWeapons(state, bot, inp, null);
+    return inp;
+  }
+
+  // 4. Air combat context & strategic RTB decision
+  const inAirBattle = isInAerialBattle(state, bot);
+  const airTarget = selectAirTarget(state, bot, ai, front.frontlineX, forwardDir, front.enemyHqX);
+  const groundTarget = selectGroundTarget(state, bot, front, forwardDir);
+  const oppBunker = selectOpportunisticBunker(state, bot, front.frontlineX, forwardDir);
+  const finishingWeakGround = groundTarget
+    && groundTarget.hp <= 240
+    && Math.abs(groundTarget.x - bot.x) <= 700
+    && bot.hp >= bot.maxHp * 0.5;
+  const immediateBunkerCapture = oppBunker
+    && Math.abs(oppBunker.x - bot.x) <= 550
+    && bot.hp >= bot.maxHp * 0.5;
+  const lowHp = bot.hp <= bot.maxHp * HELI_BOT_CONFIG.lowHpRetreatRatio;
+  const needAmmoRtb = bot.secondaryAmmo === 0 && !inAirBattle && !airTarget && !finishingWeakGround && !immediateBunkerCapture;
+  const moreSafeCivs = selectOpportunisticCivilian(
+    state,
+    bot,
+    front.frontlineX,
+    forwardDir,
+    front.enemyHqX,
+    2400
+  );
+  const needCivRtb = !inAirBattle
+    && !airTarget
+    && (civCount >= 2
+      || (civCount >= 1 && !moreSafeCivs)
+      || (civCount >= 1 && bot.passengers.length >= bot.cabinCapacity));
+
+  if (lowHp) {
+    ai.rtbCommitted = true;
+    ai.rtbReason = "hp";
+  } else if (ai.rtbCommitted && ai.rtbReason === "hp") {
+    // Stay committed to low-HP retreat until landing on pad
+  } else if (needAmmoRtb) {
+    ai.rtbCommitted = true;
+    ai.rtbReason = "ammo";
+  } else if (needCivRtb) {
+    ai.rtbCommitted = true;
+    ai.rtbReason = "civilians";
+  } else if (inAirBattle || airTarget) {
+    ai.rtbCommitted = false;
+    ai.rtbReason = "none";
+  } else {
+    ai.rtbCommitted = false;
+    ai.rtbReason = "none";
+  }
+
+  // 5. Low-HP retreat overrides combat
+  if (ai.rtbCommitted && ai.rtbReason === "hp") {
+    ai.mode = "rtb";
+    ai.trackedAirId = null;
+    ai.airTactic = "none";
+    ai.airTacticTicks = 0;
+    flyHeliToBase(state, bot, inp, homeX, ai, front, forwardDir);
+    tryFireHeliWeapons(state, bot, inp, null);
+    return inp;
+  }
+
+  // 6. Air-to-air defense & limited pursuit
+  if (airTarget) {
+    ai.mode = "air_combat";
+    executeAirCombat(state, bot, ai, inp, airTarget);
+    tryFireHeliWeapons(state, bot, inp, airTarget);
+    return inp;
+  }
+
+  ai.trackedAirId = null;
+  ai.airTactic = "none";
+  ai.airTacticTicks = 0;
+
+  // 7. Safe strategic RTB (ammo reload or civilian dropoff)
+  if (ai.rtbCommitted) {
+    ai.mode = "rtb";
+    flyHeliToBase(state, bot, inp, homeX, ai, front, forwardDir);
+    tryFireHeliWeapons(state, bot, inp, null);
+    return inp;
+  }
+
+  // 8. Gunship frontline attack vs opportunistic bunker capture & civilian rescue
+  const oppCiv = selectOpportunisticCivilian(
+    state,
+    bot,
+    front.frontlineX,
+    forwardDir,
+    front.enemyHqX,
+    HELI_BOT_CONFIG.civDetourMaxDist
+  );
+  const urgentGroundThreat = groundTarget
+    && (groundTarget.kind === "aa_flak_truck"
+      || groundTarget.kind === "main_battle_tank"
+      || groundTarget.kind === "self_propelled_howitzer")
+    && Math.abs(groundTarget.x - bot.x) <= 700;
+
+  if (!urgentGroundThreat && oppBunker && (Math.abs(oppBunker.x - bot.x) <= 900 || !groundTarget)) {
+    ai.mode = "bunker_drop";
+    const dropX = oppBunker.x - forwardDir * 40;
+    steerHeliTo(bot, inp, dropX, 115, { deadzoneX: 25 });
+  } else if (!urgentGroundThreat && oppCiv && (Math.abs(oppCiv.x - bot.x) <= 750 || !groundTarget)) {
+    ai.mode = "rescue";
+    const distCiv = Math.abs(bot.x - oppCiv.x);
+    steerHeliTo(bot, inp, oppCiv.x, distCiv <= 85 ? 8 : 105, {
+      deadzoneX: 24,
+      keepFacing: distCiv <= 45
+    });
+  } else if (groundTarget) {
+    ai.mode = "ground_attack";
+    if (ai.strafeTargetId !== groundTarget.id) {
+      ai.strafeTargetId = groundTarget.id;
+      ai.strafePhase = "approach";
+    }
+    const dxFromFriendly = (groundTarget.x - bot.x) * forwardDir;
+    if (ai.strafePhase === "approach") {
+      if (dxFromFriendly < HELI_BOT_CONFIG.strafeBreakDist) {
+        ai.strafePhase = "breakaway";
+        ai.strafeBreakX = clamp(
+          groundTarget.x - forwardDir * HELI_BOT_CONFIG.strafeStandoffDist,
+          front.minX + 180,
+          front.maxX - 180
+        );
+        steerHeliTo(bot, inp, ai.strafeBreakX, 125, { deadzoneX: 30 });
+      } else {
+        const dxMuzzle = bot.dir === forwardDir
+          ? Math.max(40, (groundTarget.x - (bot.x + bot.dir * 36)) * bot.dir)
+          : Math.max(40, dxFromFriendly);
+        const aimPitch = bot.pitch < -0.08 ? bot.pitch : -0.16;
+        const goalY = clamp(
+          groundTarget.centerY - dxMuzzle * Math.tan(aimPitch) - 10,
+          HELI_BOT_CONFIG.minCombatY,
+          HELI_BOT_CONFIG.maxCombatY
+        );
+        steerHeliTo(bot, inp, groundTarget.x, goalY, { forceDir: forwardDir, deadzoneX: 25 });
+      }
+    } else {
+      steerHeliTo(bot, inp, ai.strafeBreakX, 125, { deadzoneX: 30 });
+      if (
+        Math.abs(bot.x - ai.strafeBreakX) <= 90
+        || dxFromFriendly >= HELI_BOT_CONFIG.strafeStandoffDist - 60
+      ) {
+        ai.strafePhase = "approach";
+      }
+    }
+  } else if (oppBunker) {
+    ai.mode = "bunker_drop";
+    steerHeliTo(bot, inp, oppBunker.x - forwardDir * 40, 115, { deadzoneX: 25 });
+  } else if (oppCiv) {
+    ai.mode = "rescue";
+    const distCiv = Math.abs(bot.x - oppCiv.x);
+    steerHeliTo(bot, inp, oppCiv.x, distCiv <= 85 ? 8 : 105, {
+      deadzoneX: 24,
+      keepFacing: distCiv <= 45
+    });
+  } else {
+    ai.mode = "patrol";
+    const patrolX = clamp(front.frontlineX - forwardDir * 200, front.minX + 200, front.maxX - 200);
+    steerHeliTo(bot, inp, patrolX, 125, { deadzoneX: 35 });
+  }
+
+  tryFireHeliWeapons(state, bot, inp, ai.mode === "ground_attack" ? groundTarget : null);
+  return inp;
+}
+
+function ensureP47BotAi(bot) {
+  if (!bot.botAi || typeof bot.botAi !== "object") {
+    bot.botAi = {
+      mode: "patrol",
+      evadeTicks: 0,
+      evadePattern: "none",
+      evadeCooldown: 0,
+      threatNoticeTicks: 0,
+      strafePhase: "approach",
+      strafeTargetId: null,
+      strafeExtendX: 0,
+      engagedAirId: null,
+      airTactic: "none",
+      airTacticPhase: "commit",
+      airTacticTicks: 0,
+      airPassDir: bot.team === "allied" ? 1 : -1,
+      airPassOvershoot: P47_BOT_CONFIG.airPassThroughDist,
+      airPassOffsetSign: 1,
+      airThreatTicks: 0,
+      senseCooldown: 0,
+      trackedAirId: null,
+      trackedAirX: 0,
+      trackedAirY: 220,
+      trackedAirVx: 0,
+      trackedAirVy: 0,
+      pendingAirX: 0,
+      pendingAirY: 220,
+      pendingAirVx: 0,
+      pendingAirVy: 0,
+      hasPendingAir: false,
+      aimWanderY: 0,
+      aimWanderTicks: 0,
+      airAimLockTicks: 0,
+      airFireDelayTicks: 2,
+      airPrimaryBurstTicks: 0,
+      rtbCommitted: false,
+      rtbReason: "none",
+      landingGoAround: false
+    };
+  }
+  return bot.botAi;
+}
+
+function steerP47Heading(bot, inp, desiredDir) {
+  if (bot.turnTimer > 0) return;
+  if (bot.dir === desiredDir) {
     if (bot.dir === 1) inp.right = true;
     else inp.left = true;
-    if (bot.speed >= cfg.takeoffSpeed) inp.up = true;
-    return inp;
+  } else {
+    if (bot.dir === 1) inp.left = true;
+    else inp.right = true;
+  }
+}
+
+function steerP47Altitude(bot, inp, goalY, opts = {}) {
+  const minY = opts.minY ?? P47_BOT_CONFIG.minCombatY;
+  const yTol = opts.yTol ?? 18;
+  const targetY = Math.max(minY, goalY);
+
+  if (bot.y <= minY + 12 && (bot.vy || 0) < -30) {
+    inp.up = true;
+    return;
   }
 
-  const nearEnemyBase = Math.abs(bot.x - enemyHqX) < 1150 && state.hqs[enemyTeam].hp > 800 && bot.dir === forwardDir;
-  const pastHomeSide = (bot.x - BASES[bot.team].hqX) * forwardDir < 500 && bot.dir === -forwardDir;
-  const nearWorldEdge = (bot.x > MAX_X - 600 && bot.dir === 1) || (bot.x < MIN_X + 600 && bot.dir === -1);
-  const wantTurn = nearEnemyBase || pastHomeSide || nearWorldEdge;
+  const predY = bot.y + (bot.vy || 0) * 0.24;
+  if (predY < targetY - yTol) {
+    inp.up = true;
+  } else if (predY > targetY + yTol && bot.y > minY + 18) {
+    inp.down = true;
+  }
+}
 
-  if (bot.turnTimer === 0) {
-    if (wantTurn) {
-      if (bot.dir === 1) inp.left = true;
-      else inp.right = true;
+function updateP47Evasion(state, bot, ai, inp, frontlineX, forwardDir) {
+  if (ai.evadeCooldown > 0) ai.evadeCooldown -= 1;
+
+  const threat = detectIncomingThreat(state, bot, P47_BOT_CONFIG);
+  if (!threat || ai.evadeTicks > 0) {
+    ai.threatNoticeTicks = 0;
+  } else if (!threat.fromSam && threat.tCpa > 0.35) {
+    ai.threatNoticeTicks = (ai.threatNoticeTicks || 0) + 1;
+  } else {
+    ai.threatNoticeTicks = 4;
+  }
+
+  const threatNoticed = Boolean(threat && (threat.fromSam || threat.tCpa <= 0.35 || ai.threatNoticeTicks >= 4));
+  const canStartNew = ai.evadeTicks <= 0
+    && (ai.evadeCooldown <= 0 || (threat && threat.tCpa <= 0.45 && threat.cpaDist <= 62));
+
+  if (threatNoticed && canStartNew) {
+    ai.threatNoticeTicks = 0;
+    const deepPastFront = (bot.x - frontlineX) * forwardDir > 350;
+    if ((deepPastFront || bot.hp < bot.maxHp * 0.60) && bot.dir === forwardDir) {
+      ai.evadePattern = "turn_break";
+      ai.evadeTicks = P47_BOT_CONFIG.evadeTurnTicks;
+    } else if (bot.y >= 220 && (threat.vy > 40 || threat.y >= bot.y)) {
+      ai.evadePattern = "dive_break";
+      ai.evadeTicks = P47_BOT_CONFIG.evadeTicks;
     } else {
-      if (bot.dir === 1) inp.right = true;
-      else inp.left = true;
+      ai.evadePattern = "climb_break";
+      ai.evadeTicks = P47_BOT_CONFIG.evadeTicks;
     }
   }
 
-  let targetY = 260;
-  const enemyB52 = state.b52s.find((b) => b.team !== bot.team && b.alive && b.hp > 0);
-  if (enemyB52) {
-    targetY = enemyB52.y;
+  if (ai.evadeTicks <= 0) return false;
+
+  ai.evadeTicks -= 1;
+  if (ai.evadePattern === "turn_break") {
+    steerP47Heading(bot, inp, -forwardDir);
+    if (bot.y < 220) inp.up = true;
+  } else if (ai.evadePattern === "dive_break") {
+    steerP47Heading(bot, inp, bot.dir);
+    const brakeBuffer = Math.max(0, -(bot.vy || 0) * 0.20);
+    if (bot.y > P47_BOT_CONFIG.evadeFloorY + brakeBuffer) inp.down = true;
+    else inp.up = true;
   } else {
-    const enemyAir = Object.values(state.players).find((p) => p.team !== bot.team && p.alive && p.y > 40);
-    if (enemyAir) targetY = clamp(enemyAir.y, 180, 900);
+    steerP47Heading(bot, inp, bot.dir);
+    if (bot.y < CEILING_Y - 120) inp.up = true;
   }
 
-  if (bot.y < Math.max(110, targetY - 25)) inp.up = true;
-  else if (bot.y > targetY + 25 && bot.y > 140) inp.down = true;
+  if (ai.evadeTicks <= 0) {
+    ai.evadeCooldown = P47_BOT_CONFIG.evadeCooldownTicks;
+    ai.evadePattern = "none";
+  }
+  return true;
+}
 
-  // Air-to-air firing (cannons only — dumb bombs are reserved for ground bombing runs)
+function isP47InAerialBattle(state, bot) {
+  const botCenterY = bot.y + 18;
+  for (const ep of Object.values(state.players)) {
+    if (ep.team === bot.team || !ep.alive || ep.crashing || ep.y <= 15) continue;
+    if (Math.hypot(ep.x - bot.x, (ep.y + 22) - botCenterY) <= P47_BOT_CONFIG.aerialBattleRange) return true;
+  }
+  for (const b52 of state.b52s) {
+    if (b52.team !== bot.team && b52.alive && b52.hp > 0 && Math.abs(b52.x - bot.x) <= 2200) return true;
+  }
+  for (const v2 of state.v2s) {
+    if (v2.team !== bot.team && v2.alive && v2.hp > 0 && Math.hypot(v2.x - bot.x, v2.y - botCenterY) <= 1100) return true;
+  }
+  return false;
+}
+
+function selectP47AirTarget(state, bot, ai, frontlineX, forwardDir, enemyHqX) {
+  const botCenterY = bot.y + 18;
+  let best = null;
+  let bestScore = -Infinity;
+
   for (const b52 of state.b52s) {
     if (b52.team === bot.team || !b52.alive || b52.hp <= 0) continue;
-    const dx = (b52.x - bot.x) * bot.dir;
-    if (dx > 0 && dx <= 750 && Math.abs(b52.y - bot.y) < 120) {
-      inp.firePrimary = true;
+    const dist = Math.hypot(b52.x - bot.x, b52.y - botCenterY);
+    if (dist > P47_BOT_CONFIG.b52InterceptRange) continue;
+    const score = 950 - dist * 0.08 + (ai.engagedAirId === b52.id ? 120 : 0);
+    if (score > bestScore) {
+      bestScore = score;
+      best = {
+        id: b52.id,
+        kind: "b52",
+        isAir: true,
+        x: b52.x,
+        centerY: b52.y,
+        vx: b52.vx || 0,
+        vy: 0,
+        hitHalfH: 40,
+        hp: b52.hp,
+        maxHp: b52.maxHp
+      };
+    }
+  }
+
+  for (const v2 of state.v2s) {
+    if (v2.team === bot.team || !v2.alive || v2.hp <= 0) continue;
+    const dist = Math.hypot(v2.x - bot.x, v2.y - botCenterY);
+    if (dist > P47_BOT_CONFIG.airVisualRange) continue;
+    const score = 820 - dist * 0.3 + (ai.engagedAirId === v2.id ? 120 : 0);
+    if (score > bestScore) {
+      bestScore = score;
+      best = {
+        id: v2.id,
+        kind: "v2",
+        isAir: true,
+        x: v2.x,
+        centerY: v2.y,
+        vx: v2.vx || 0,
+        vy: v2.vy || 0,
+        hitHalfH: 24,
+        hp: v2.hp,
+        maxHp: v2.maxHp
+      };
+    }
+  }
+
+  for (const ep of Object.values(state.players)) {
+    if (ep.team === bot.team || !ep.alive || ep.crashing || ep.y <= 15) continue;
+    const dist = Math.hypot(ep.x - bot.x, (ep.y + 22) - botCenterY);
+    const horizGap = Math.abs(ep.x - bot.x);
+    const behindEnemyFront = (ep.x - frontlineX) * forwardDir;
+    const hpRatio = ep.hp / Math.max(1, ep.maxHp);
+    const nearEnemyHq = Math.abs(ep.x - enemyHqX) < P47_BOT_CONFIG.enemyHqNoChaseDist;
+    const alreadyEngaged = ai.engagedAirId === ep.id;
+
+    const maxVis = alreadyEngaged
+      ? P47_BOT_CONFIG.airEngageHysteresisRange
+      : P47_BOT_CONFIG.airVisualRange;
+    const normalEligible = dist <= maxVis && behindEnemyFront <= P47_BOT_CONFIG.airMaxBehindFront;
+
+    const pursuitEligible = hpRatio <= P47_BOT_CONFIG.airPursuitHpRatio
+      && bot.hp >= bot.maxHp * P47_BOT_CONFIG.pursuitMinHpRatio
+      && (bot.aaWarningTicks || 0) <= 0
+      && !nearEnemyHq
+      && behindEnemyFront <= P47_BOT_CONFIG.airPursuitMaxBehindFront
+      && horizGap <= P47_BOT_CONFIG.airPursuitMaxGap;
+
+    if (!normalEligible && !pursuitEligible) continue;
+
+    let score = 620 - dist * 0.32 + (1 - hpRatio) * 180;
+    if (alreadyEngaged) score += 120;
+    if (ep.aircraftType === "p47") score += 35;
+    if (score > bestScore) {
+      bestScore = score;
+      best = {
+        id: ep.id,
+        kind: ep.aircraftType,
+        isAir: true,
+        x: ep.x,
+        centerY: ep.y + 22,
+        vx: ep.vx || 0,
+        vy: ep.vy || 0,
+        hitHalfH: 30,
+        hp: ep.hp,
+        maxHp: ep.maxHp
+      };
+    }
+  }
+
+  ai.engagedAirId = best ? best.id : null;
+  return best;
+}
+
+function flyP47ToBaseAndLand(state, bot, ai, inp, homeX, forwardDir) {
+  const padMinX = BASES[bot.team].padMinX;
+  const padMaxX = BASES[bot.team].padMaxX;
+  const entryX = homeX + forwardDir * 240;
+
+  if (bot.y <= 1.5 && isOnFriendlyPad(bot)) {
+    if (bot.speed > 20) {
+      inp[bot.dir === 1 ? "left" : "right"] = true;
+      inp.down = true;
+    }
+    return;
+  }
+
+  if (bot.y > 20 && (bot.x - (homeX - forwardDir * 140)) * forwardDir < 0 && bot.dir === -forwardDir) {
+    ai.landingGoAround = true;
+  }
+
+  if (ai.landingGoAround) {
+    steerP47Heading(bot, inp, forwardDir);
+    steerP47Altitude(bot, inp, 170, { minY: 95, yTol: 14 });
+    if ((bot.x - homeX) * forwardDir >= 950) {
+      ai.landingGoAround = false;
+    }
+    return;
+  }
+
+  const distFromHome = (bot.x - homeX) * forwardDir;
+  if (distFromHome > P47_BOT_CONFIG.landingApproachDist) {
+    steerP47Heading(bot, inp, -forwardDir);
+    steerP47Altitude(bot, inp, 175, { minY: 95, yTol: 16 });
+    return;
+  }
+
+  if (bot.dir !== -forwardDir) {
+    steerP47Heading(bot, inp, -forwardDir);
+    steerP47Altitude(bot, inp, 140, { minY: 85, yTol: 14 });
+    return;
+  }
+
+  // Manage airspeed cleanly in Stage 1/2 (never stall, never trigger accidental U-turn)
+  if (bot.speed > 275) {
+    inp[bot.dir === 1 ? "left" : "right"] = true;
+  } else if (bot.throttleOffTime > 0.55 || bot.speed < 250) {
+    inp[bot.dir === 1 ? "right" : "left"] = true;
+  }
+
+  const overPad = bot.x >= padMinX + 35 && bot.x <= padMaxX - 35;
+  if (overPad && bot.y <= 45) {
+    if (bot.vy < -32 || bot.pitch < -0.15) {
+      inp.up = true;
+    } else if (bot.vy > -16 && bot.y > 2) {
+      inp.down = true;
+    }
+  } else {
+    const distToEntry = Math.max(0, (bot.x - entryX) * forwardDir);
+    const glideY = clamp(18 + distToEntry * 0.085, 18, 150);
+    steerP47Altitude(bot, inp, glideY, { minY: 16, yTol: 10 });
+  }
+}
+
+function chooseP47AirTactic(state, bot, ai, airTarget, inCone, onTail) {
+  const toTargetDir = ai.trackedAirX >= bot.x ? 1 : -1;
+  const horizDist = Math.abs(ai.trackedAirX - bot.x);
+  const closingSpeed = ((bot.vx || 0) - ai.trackedAirVx) * toTargetDir;
+  const isHeli = airTarget.kind === "heli";
+  const prev = ai.airTactic;
+
+  const scores = {
+    tail_chase: 48
+      + (onTail ? 64 : 0)
+      + (closingSpeed < 120 ? 30 : 0)
+      + (isHeli && closingSpeed > 260 ? -55 : 0)
+      + (inCone && ai.airThreatTicks >= 16 ? -35 : 0)
+      + (prev === "tail_chase" ? -14 : 0)
+      + botHash01(bot.id, state.tick, 51) * 24,
+
+    boom_zoom: 44
+      + (isHeli && ai.trackedAirY < 260 ? 52 : 0)
+      + (!onTail && horizDist > 380 ? 22 : 0)
+      + (ai.trackedAirY > 380 ? -40 : 0)
+      + (prev === "boom_zoom" ? -16 : 0)
+      + botHash01(bot.id, state.tick, 52) * 24,
+
+    offset_pass: 42
+      + (!onTail && closingSpeed > 260 ? 50 : 0)
+      + (inCone ? 32 : 0)
+      + (horizDist < 620 && !onTail ? 20 : 0)
+      + (onTail && horizDist > 320 ? -38 : 0)
+      + (prev === "offset_pass" ? -16 : 0)
+      + botHash01(bot.id, state.tick, 53) * 24
+  };
+
+  let best = "tail_chase";
+  let bestScore = -Infinity;
+  for (const [tactic, sc] of Object.entries(scores)) {
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = tactic;
+    }
+  }
+
+  ai.airTactic = best;
+  ai.airTacticPhase = "commit";
+  ai.airPassDir = toTargetDir;
+  ai.airPassOvershoot = P47_BOT_CONFIG.airPassThroughDist
+    + Math.floor((botHash01(bot.id, state.tick, 54) - 0.5) * 140);
+  ai.airPassOffsetSign = ai.trackedAirY > 300 ? -1 : 1;
+  ai.airTacticTicks = 75 + Math.floor(botHash01(bot.id, state.tick, 55) * 55);
+}
+
+function executeP47AirCombat(state, bot, ai, inp, airTarget, front) {
+  updateAirTargetPerception(state, bot, ai, airTarget, P47_BOT_CONFIG);
+
+  if (airTarget.kind === "b52" || airTarget.kind === "v2") {
+    const dirToTgt = ai.trackedAirX >= bot.x ? 1 : -1;
+    const dx = (ai.trackedAirX - bot.x) * bot.dir;
+    const desiredDir = dx < -450 ? dirToTgt : bot.dir;
+    if (Math.abs(ai.trackedAirX - bot.x) > 450) {
+      steerP47Heading(bot, inp, dirToTgt);
+    } else {
+      steerP47Heading(bot, inp, desiredDir);
+    }
+    const maxAirY = CEILING_Y - 50;
+    const goalY = clamp(airTarget.centerY + ai.aimWanderY * 0.5, 110, maxAirY);
+    steerP47Altitude(bot, inp, goalY, { minY: 110, yTol: 22 });
+    return;
+  }
+
+  const inCone = isInEnemyAirThreatCone(state, bot, airTarget);
+  const onTail = isBehindAirTarget(state, bot, airTarget);
+  ai.airThreatTicks = inCone ? ai.airThreatTicks + 1 : Math.max(0, ai.airThreatTicks - 2);
+
+  if (ai.airTactic === "none" || ai.airTacticTicks <= 0) {
+    chooseP47AirTactic(state, bot, ai, airTarget, inCone, onTail);
+  }
+  ai.airTacticTicks -= 1;
+
+  const dirToTracked = ai.trackedAirX >= bot.x ? 1 : -1;
+
+  if (ai.airTactic === "boom_zoom") {
+    if (ai.airTacticPhase === "commit") {
+      steerP47Heading(bot, inp, ai.airPassDir);
+      const dxAhead = (ai.trackedAirX - bot.x) * ai.airPassDir;
+      const goalY = (dxAhead >= 200 && dxAhead <= 680)
+        ? clamp(ai.trackedAirY + 22 + ai.aimWanderY * 0.5, P47_BOT_CONFIG.minCombatY + 12, 460)
+        : clamp(Math.max(P47_BOT_CONFIG.airBnZClimbY, ai.trackedAirY + 110), 150, 520);
+      steerP47Altitude(bot, inp, goalY, { minY: P47_BOT_CONFIG.minCombatY + 10, yTol: 18 });
+      if ((bot.x - airTarget.x) * ai.airPassDir >= ai.airPassOvershoot) {
+        ai.airTacticPhase = "extend";
+        ai.airTacticTicks = Math.min(ai.airTacticTicks, 45);
+      }
+    } else {
+      steerP47Heading(bot, inp, -ai.airPassDir);
+      steerP47Altitude(bot, inp, Math.max(P47_BOT_CONFIG.airBnZClimbY, ai.trackedAirY + 95), { minY: 130, yTol: 20 });
+      if (bot.dir === -ai.airPassDir && bot.turnTimer === 0) {
+        ai.airTacticTicks = 0;
+      }
+    }
+    return;
+  }
+
+  if (ai.airTactic === "offset_pass") {
+    if (ai.airTacticPhase === "commit") {
+      steerP47Heading(bot, inp, ai.airPassDir);
+      const goalY = clamp(
+        ai.trackedAirY + ai.airPassOffsetSign * P47_BOT_CONFIG.airSlashOffsetY + ai.aimWanderY * 0.5,
+        P47_BOT_CONFIG.minCombatY + 14,
+        520
+      );
+      steerP47Altitude(bot, inp, goalY, { minY: P47_BOT_CONFIG.minCombatY + 12, yTol: 18 });
+      if ((bot.x - airTarget.x) * ai.airPassDir >= ai.airPassOvershoot) {
+        ai.airTacticPhase = "extend";
+        ai.airTacticTicks = Math.min(ai.airTacticTicks, 45);
+      }
+    } else {
+      steerP47Heading(bot, inp, -ai.airPassDir);
+      steerP47Altitude(bot, inp, clamp(ai.trackedAirY + ai.aimWanderY, 120, 520), { minY: 115, yTol: 20 });
+      if (bot.dir === -ai.airPassDir && bot.turnTimer === 0) {
+        ai.airTacticTicks = 0;
+      }
+    }
+    return;
+  }
+
+  // "tail_chase"
+  const dx = (ai.trackedAirX - bot.x) * bot.dir;
+  if (dx < -380) {
+    steerP47Heading(bot, inp, dirToTracked);
+  } else {
+    // Keep away from enemy HQ while dogfighting
+    if (Math.abs(bot.x - front.enemyHqX) < P47_BOT_CONFIG.enemyHqNoChaseDist && bot.dir === (bot.team === "allied" ? 1 : -1)) {
+      steerP47Heading(bot, inp, -bot.dir);
+    } else {
+      steerP47Heading(bot, inp, bot.dir);
+    }
+  }
+  const goalY = clamp(ai.trackedAirY + ai.aimWanderY, 110, 620);
+  steerP47Altitude(bot, inp, goalY, { minY: P47_BOT_CONFIG.minCombatY + 12, yTol: 20 });
+}
+
+function executeP47GroundAttack(state, bot, ai, inp, groundTarget, front, forwardDir) {
+  if (ai.strafeTargetId !== groundTarget.id) {
+    ai.strafeTargetId = groundTarget.id;
+    ai.strafePhase = "approach";
+  }
+
+  if (Math.abs(bot.x - front.enemyHqX) < P47_BOT_CONFIG.enemyHqNoChaseDist && bot.dir === forwardDir) {
+    ai.strafePhase = "extend";
+    ai.strafeExtendX = clamp(
+      front.frontlineX - forwardDir * P47_BOT_CONFIG.extendAfterPassDist,
+      front.minX + 600,
+      front.maxX - 600
+    );
+  }
+
+  if (ai.strafePhase === "approach") {
+    const dirToTgt = groundTarget.x >= bot.x ? 1 : -1;
+    const dxToTgt = (groundTarget.x - bot.x) * bot.dir;
+
+    if (dxToTgt < -P47_BOT_CONFIG.extendAfterPassDist * 0.65) {
+      steerP47Heading(bot, inp, dirToTgt);
+      steerP47Altitude(bot, inp, P47_BOT_CONFIG.attackRunAltitude, { minY: 130, yTol: 18 });
+      return;
+    }
+
+    if (dxToTgt <= P47_BOT_CONFIG.pulloutDist) {
+      ai.strafePhase = "extend";
+      let extX = clamp(
+        groundTarget.x + bot.dir * P47_BOT_CONFIG.extendAfterPassDist,
+        front.minX + 600,
+        front.maxX - 600
+      );
+      if (Math.abs(extX - front.enemyHqX) < P47_BOT_CONFIG.enemyHqNoChaseDist) {
+        extX = front.enemyHqX - forwardDir * P47_BOT_CONFIG.enemyHqNoChaseDist;
+      }
+      ai.strafeExtendX = extX;
+      steerP47Heading(bot, inp, bot.dir);
+      steerP47Altitude(bot, inp, P47_BOT_CONFIG.attackRunAltitude, { minY: 140, yTol: 16 });
+      return;
+    }
+
+    steerP47Heading(bot, inp, bot.dir);
+    const goalY = dxToTgt > P47_BOT_CONFIG.diveStartDist
+      ? P47_BOT_CONFIG.attackRunAltitude
+      : clamp(groundTarget.centerY + dxToTgt * 0.28, P47_BOT_CONFIG.minCombatY, 260);
+    steerP47Altitude(bot, inp, goalY, { minY: P47_BOT_CONFIG.minCombatY, yTol: 14 });
+    return;
+  }
+
+  // "extend": climb out to run altitude, extend to turnaround mark, then start fresh approach
+  const extDir = ai.strafeExtendX >= bot.x ? 1 : -1;
+  steerP47Heading(bot, inp, extDir);
+  steerP47Altitude(bot, inp, P47_BOT_CONFIG.attackRunAltitude, { minY: 140, yTol: 16 });
+  if (Math.abs(bot.x - ai.strafeExtendX) <= 180) {
+    ai.strafePhase = "approach";
+  }
+}
+
+function isBombImpactClear(state, bot, impactX) {
+  for (const c of state.civilians) {
+    if (Math.abs(c.x - impactX) <= 65) return false;
+  }
+  for (const u of state.units) {
+    if (u.hp <= 0) continue;
+    if (u.kind === "ambulance" && Math.abs(u.x - impactX) <= 72) return false;
+    if (u.team === bot.team && Math.abs(u.x - impactX) <= 65) return false;
+  }
+  for (const p of state.paratroopers) {
+    if (p.team === bot.team && Math.abs(p.x - impactX) <= 55) return false;
+  }
+  for (const b of state.bunkers) {
+    if (b.owner === bot.team && b.hp > 0 && Math.abs(b.x - impactX) <= 80) return false;
+  }
+  return true;
+}
+
+function tryFireP47Weapons(state, bot, inp, focusAir, focusGround) {
+  if (bot.turnTimer > 0 || bot.landedAtBase || bot.y <= 5) return;
+
+  const ai = ensureP47BotAi(bot);
+  const cfg = AIRCRAFT_CONFIG.p47;
+  const angle = bot.effectivePitch ?? bot.pitch ?? 0;
+  const muzzleX = bot.x + bot.dir * 38;
+  const muzzleY = bot.y + 18;
+  const pVx = bot.dir * cfg.primarySpeed * Math.cos(angle) + (bot.vx || 0) * 0.25;
+  const pVy = cfg.primarySpeed * Math.sin(angle);
+
+  // 1. Air-to-air wing cannon candidates (never drop bombs on air targets)
+  const airCandidates = [];
+  if (focusAir) airCandidates.push(focusAir);
+  for (const b52 of state.b52s) {
+    if (b52.team === bot.team || !b52.alive || b52.hp <= 0) continue;
+    if (focusAir && focusAir.id === b52.id) continue;
+    if (Math.abs(b52.x - bot.x) <= 900) {
+      airCandidates.push({ id: b52.id, isAir: true, x: b52.x, centerY: b52.y, vx: b52.vx || 0, vy: 0, hitHalfH: 40 });
     }
   }
   for (const ep of Object.values(state.players)) {
-    if (ep.team === bot.team || !ep.alive || ep.y <= 20) continue;
-    const dx = (ep.x - bot.x) * bot.dir;
-    if (dx > 0 && dx <= 750 && Math.abs(ep.y - bot.y) < 120) {
-      inp.firePrimary = true;
+    if (ep.team === bot.team || !ep.alive || ep.crashing || ep.y <= 20) continue;
+    if (focusAir && focusAir.id === ep.id) continue;
+    if (Math.abs(ep.x - bot.x) <= 850) {
+      airCandidates.push({ id: ep.id, isAir: true, x: ep.x, centerY: ep.y + 22, vx: ep.vx || 0, vy: ep.vy || 0, hitHalfH: 30 });
     }
   }
   for (const v2 of state.v2s) {
     if (v2.team === bot.team || !v2.alive || v2.hp <= 0) continue;
-    const dx = (v2.x - bot.x) * bot.dir;
-    if (dx > 0 && dx <= 750 && Math.abs(v2.y - bot.y) < 100) inp.firePrimary = true;
+    if (focusAir && focusAir.id === v2.id) continue;
+    if (Math.abs(v2.x - bot.x) <= 850) {
+      airCandidates.push({ id: v2.id, isAir: true, x: v2.x, centerY: v2.y, vx: v2.vx || 0, vy: v2.vy || 0, hitHalfH: 24 });
+    }
   }
 
-  // Ground strafe / ballistic dumb bomb drops when cruising low
-  if (bot.y < 380) {
-    const gTgt = findGroundEnemyTarget(state, bot.x, bot.team, 900);
-    if (gTgt) {
-      const dxForward = (gTgt.x - bot.x) * bot.dir;
-      if (dxForward > 0) {
-        if (bot.pitch <= 0.05 && gTgt.dist < 550) inp.firePrimary = true;
-        const lead = Math.abs(bot.vx) * Math.sqrt((2 * Math.max(10, bot.y)) / GRAVITY);
-        if (bot.secondaryAmmo > 0 && Math.abs(dxForward - lead) <= 85) {
-          inp.fireSecondary = true;
-        }
+  let airShotReady = false;
+  for (const tgt of airCandidates) {
+    if ((tgt.x - muzzleX) * bot.dir <= 25) continue;
+    const relVx = pVx - (tgt.vx || 0);
+    if ((tgt.x - muzzleX) * relVx <= 0) continue;
+    const t = (tgt.x - muzzleX) / relVx;
+    if (t <= 0 || t > 1.05) continue;
+    const projY = muzzleY + pVy * t;
+    const targetY = tgt.centerY + (tgt.vy || 0) * t;
+    const tol = P47_BOT_CONFIG.airPrimaryAimTolerance;
+    const rayAligned = Math.abs(projY - targetY) <= tol;
+    const bandAligned = Math.abs(tgt.x - muzzleX) <= 560 && Math.abs(muzzleY - targetY) <= 88;
+    if ((rayAligned || bandAligned) && isRayClearOfFriendliesAndCivilians(state, bot, muzzleX, muzzleY, pVx, pVy, t, tgt.x)) {
+      airShotReady = true;
+      if (!inp.firePrimary && ai.airAimLockTicks + 1 >= ai.airFireDelayTicks) {
+        inp.firePrimary = true;
+        ai.airPrimaryBurstTicks = P47_BOT_CONFIG.airPrimaryBurstHoldTicks;
+      }
+      break;
+    }
+  }
+
+  if (airShotReady) {
+    ai.airAimLockTicks = Math.min(60, (ai.airAimLockTicks || 0) + 1);
+  } else {
+    ai.airAimLockTicks = Math.max(0, (ai.airAimLockTicks || 0) - 1);
+    if (ai.airAimLockTicks === 0) {
+      const span = P47_BOT_CONFIG.airFireReactMaxTicks - P47_BOT_CONFIG.airFireReactMinTicks + 1;
+      ai.airFireDelayTicks = P47_BOT_CONFIG.airFireReactMinTicks
+        + Math.floor(botHash01(bot.id, state.tick, 61) * span);
+    }
+  }
+
+  if ((ai.airPrimaryBurstTicks || 0) > 0) {
+    ai.airPrimaryBurstTicks -= 1;
+    if (!inp.firePrimary) {
+      const keepSpraying = airCandidates.some((c) => {
+        const dx = (c.x - muzzleX) * bot.dir;
+        if (dx <= 20 || dx > 820 || Math.abs(c.centerY - muzzleY) > 150) return false;
+        const t = Math.max(0.05, (c.x - muzzleX) / pVx);
+        return isRayClearOfFriendliesAndCivilians(state, bot, muzzleX, muzzleY, pVx, pVy, t, c.x);
+      });
+      if (keepSpraying) inp.firePrimary = true;
+    }
+  }
+
+  // 2. Ground dive-strafing (primary wing cannons, never HQ)
+  const skipAmb = !GROUND_BEHAVIOR_CONFIG.ambulanceTargetable;
+  const groundCandidates = [];
+  if (focusGround) groundCandidates.push(focusGround);
+  for (const u of state.units) {
+    if (u.team === bot.team || u.hp <= 0 || (skipAmb && u.kind === "ambulance") || u.kind === "ambulance") continue;
+    if (focusGround && focusGround.id === u.id) continue;
+    if ((u.x - bot.x) * bot.dir > 35 && Math.abs(u.x - bot.x) <= 740) {
+      groundCandidates.push({ id: u.id, x: u.x, hitH: getGroundUnitHitbox(u.kind).hitH });
+    }
+  }
+  for (const t of state.targets) {
+    if (t.team === bot.team || t.hp <= 0 || (skipAmb && t.kind === "ambulance") || t.kind === "ambulance") continue;
+    if (focusGround && focusGround.id === t.id) continue;
+    if ((t.x - bot.x) * bot.dir > 35 && Math.abs(t.x - bot.x) <= 740) {
+      groundCandidates.push({ id: t.id, x: t.x, hitH: 52 });
+    }
+  }
+  for (const b of state.bunkers) {
+    if (b.owner === "neutral" || b.owner === bot.team || b.hp <= 0) continue;
+    if (focusGround && focusGround.id === b.id) continue;
+    if ((b.x - bot.x) * bot.dir > 35 && Math.abs(b.x - bot.x) <= 740) {
+      groundCandidates.push({ id: b.id, x: b.x, hitH: 84 });
+    }
+  }
+
+  if (!inp.firePrimary && bot.y < 360 && angle < -0.02 && Math.abs(pVx) > 1e-3) {
+    for (const g of groundCandidates) {
+      const dx = g.x - muzzleX;
+      if (dx * bot.dir <= 35 || Math.abs(dx) > 700) continue;
+      const t = dx / pVx;
+      if (t <= 0 || t > 1.1) continue;
+      const projY = muzzleY + pVy * t;
+      if (projY >= -8 && projY <= g.hitH + 14 && isRayClearOfFriendliesAndCivilians(state, bot, muzzleX, muzzleY, pVx, pVy, t, g.x)) {
+        inp.firePrimary = true;
+        break;
       }
     }
   }
 
+  // 3. Exact quadratic ballistic bomb drop (never HQ, never near civilians/friendlies)
+  if (bot.secondaryAmmo > 0 && bot.secondaryCooldown <= 0 && bot.y >= 30 && bot.y < 420) {
+    const dropHeight = Math.max(1, (bot.y + 4) - 20);
+    const tFall = ((bot.vy || 0) + Math.sqrt(Math.max(0, (bot.vy || 0) * (bot.vy || 0) + 2 * GRAVITY * dropHeight))) / GRAVITY;
+    const impactX = bot.x + (bot.vx || 0) * tFall;
+
+    if (isBombImpactClear(state, bot, impactX)) {
+      const tol = P47_BOT_CONFIG.bombReleaseTolX;
+      const hitsGround = groundCandidates.some((g) => Math.abs(g.x - impactX) <= tol);
+      if (hitsGround) {
+        inp.fireSecondary = true;
+      }
+    }
+  }
+}
+
+function computeP47BotInput(state, bot) {
+  const inp = {
+    left: false,
+    right: false,
+    up: false,
+    down: false,
+    firePrimary: false,
+    fireSecondary: false
+  };
+
+  const ai = ensureP47BotAi(bot);
+  const cfg = AIRCRAFT_CONFIG.p47;
+  const forwardDir = bot.team === "allied" ? 1 : -1;
+  const front = computeHeliFrontline(state, bot.team);
+  const homeX = BASES[bot.team].padCenterX;
+
+  // 1. Base refit & scramble check
+  if (bot.landedAtBase) {
+    ai.mode = "base";
+    ai.trackedAirId = null;
+    ai.airTactic = "none";
+    ai.airTacticTicks = 0;
+
+    const scrambleThreat = Object.values(state.players).some(
+      (ep) => ep.team !== bot.team
+        && ep.alive
+        && !ep.crashing
+        && ep.y > 15
+        && Math.hypot(ep.x - bot.x, ep.y - bot.y) <= P47_BOT_CONFIG.scrambleEnemyDist
+    ) || state.b52s.some((b) => b.team !== bot.team && b.alive && b.hp > 0);
+    const canScramble = scrambleThreat && bot.hp >= bot.maxHp * 0.5 && bot.secondaryAmmo >= 2;
+    const readyToLaunch = bot.hp >= bot.maxHp * P47_BOT_CONFIG.baseReadyHpRatio
+      && bot.secondaryAmmo >= bot.maxSecondary;
+
+    if (!canScramble && !readyToLaunch) {
+      return inp;
+    }
+
+    ai.rtbCommitted = false;
+    ai.rtbReason = "none";
+    ai.landingGoAround = false;
+    ai.strafePhase = "approach";
+    steerP47Heading(bot, inp, forwardDir);
+    if (bot.speed >= cfg.takeoffSpeed) inp.up = true;
+    return inp;
+  }
+
+  // 2. Runway roll (touchdown brake on RTB vs takeoff roll)
+  if (bot.y <= 2) {
+    if (ai.rtbCommitted && isOnFriendlyPad(bot)) {
+      ai.mode = "rtb";
+      flyP47ToBaseAndLand(state, bot, ai, inp, homeX, forwardDir);
+      return inp;
+    }
+    steerP47Heading(bot, inp, bot.dir);
+    if (bot.speed >= cfg.takeoffSpeed) inp.up = true;
+    return inp;
+  }
+
+  // 3. Threat evasion
+  if (updateP47Evasion(state, bot, ai, inp, front.frontlineX, forwardDir)) {
+    ai.mode = "evade";
+    ai.trackedAirId = null;
+    ai.airTactic = "none";
+    ai.airTacticTicks = 0;
+    tryFireP47Weapons(state, bot, inp, null, null);
+    return inp;
+  }
+
+  // 4. Air combat context & strategic RTB decision
+  const inAirBattle = isP47InAerialBattle(state, bot);
+  const airTarget = selectP47AirTarget(state, bot, ai, front.frontlineX, forwardDir, front.enemyHqX);
+  const lowHp = bot.hp <= bot.maxHp * P47_BOT_CONFIG.lowHpRetreatRatio;
+  const needAmmoRtb = bot.secondaryAmmo === 0 && !inAirBattle && !airTarget;
+
+  if (lowHp) {
+    ai.rtbCommitted = true;
+    ai.rtbReason = "hp";
+  } else if (ai.rtbCommitted && ai.rtbReason === "hp") {
+    // Stay committed to low-HP retreat until landing on pad
+  } else if (needAmmoRtb) {
+    ai.rtbCommitted = true;
+    ai.rtbReason = "ammo";
+  } else if (inAirBattle || airTarget) {
+    ai.rtbCommitted = false;
+    ai.rtbReason = "none";
+  } else {
+    ai.rtbCommitted = false;
+    ai.rtbReason = "none";
+  }
+
+  // 5. Low-HP retreat overrides combat
+  if (ai.rtbCommitted && ai.rtbReason === "hp") {
+    ai.mode = "rtb";
+    ai.trackedAirId = null;
+    ai.airTactic = "none";
+    ai.airTacticTicks = 0;
+    flyP47ToBaseAndLand(state, bot, ai, inp, homeX, forwardDir);
+    tryFireP47Weapons(state, bot, inp, null, null);
+    return inp;
+  }
+
+  // 6. Air-to-air interception & dogfighting
+  if (airTarget) {
+    ai.mode = "air_combat";
+    executeP47AirCombat(state, bot, ai, inp, airTarget, front);
+    tryFireP47Weapons(state, bot, inp, airTarget, null);
+    return inp;
+  }
+
+  ai.trackedAirId = null;
+  ai.airTactic = "none";
+  ai.airTacticTicks = 0;
+
+  // 7. Safe strategic RTB for bomb reload
+  if (ai.rtbCommitted) {
+    ai.mode = "rtb";
+    flyP47ToBaseAndLand(state, bot, ai, inp, homeX, forwardDir);
+    tryFireP47Weapons(state, bot, inp, null, null);
+    return inp;
+  }
+
+  // 8. Frontline dive-strafing & bombing
+  const groundTarget = selectGroundTarget(state, bot, front, forwardDir, P47_BOT_CONFIG);
+  if (groundTarget) {
+    ai.mode = "ground_attack";
+    executeP47GroundAttack(state, bot, ai, inp, groundTarget, front, forwardDir);
+    tryFireP47Weapons(state, bot, inp, null, groundTarget);
+    return inp;
+  }
+
+  // 9. Fallback frontline combat air patrol
+  ai.mode = "patrol";
+  const nearEnemyBase = Math.abs(bot.x - front.enemyHqX) < P47_BOT_CONFIG.enemyHqNoChaseDist && bot.dir === forwardDir;
+  const pastFrontLeft = bot.x < front.frontlineX - 900 && bot.dir === -1;
+  const pastFrontRight = bot.x > front.frontlineX + 900 && bot.dir === 1;
+  const nearWorldEdge = (bot.x > front.maxX - 600 && bot.dir === 1) || (bot.x < front.minX + 600 && bot.dir === -1);
+  if (nearEnemyBase || pastFrontLeft || pastFrontRight || nearWorldEdge) {
+    steerP47Heading(bot, inp, -bot.dir);
+  } else {
+    steerP47Heading(bot, inp, bot.dir);
+  }
+  steerP47Altitude(bot, inp, P47_BOT_CONFIG.attackRunAltitude, { minY: 140, yTol: 20 });
+  tryFireP47Weapons(state, bot, inp, null, null);
   return inp;
+}
+
+export function computeBotPilotInput(state, bot) {
+  if (bot.aircraftType === "heli") {
+    return computeHeliBotInput(state, bot);
+  }
+  return computeP47BotInput(state, bot);
 }
 
 const r2 = (n) => (typeof n === "number" && Number.isFinite(n) ? Math.round(n * 100) / 100 : n);
@@ -3559,7 +5588,8 @@ export function createNetworkSnapshot(state, eventsOverride = null) {
       pitch: r2(p.pitch),
       effectivePitch: r2(p.effectivePitch),
       hp: r2(p.hp),
-      passengers: [...p.passengers]
+      passengers: [...p.passengers],
+      botAi: p.botAi ? { ...p.botAi } : null
     };
   }
 
@@ -3755,6 +5785,7 @@ export function stepSimulation(state, inputsByPlayer = {}) {
         player.landedAtBase = true;
         player.samWarningTicks = 0;
         player.aaWarningTicks = 0;
+        player.botAi = null;
         if (player.aircraftType === "heli") {
           player.passengers = ["infantry", "infantry", "infantry", "infantry"];
         }
