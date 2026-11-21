@@ -614,14 +614,20 @@ test("Phase 2: Shared Team War Funds income, bunker neutralization, HQ victory &
   assert.equal(state.bunkers[2].owner, "neutral");
   assert.equal(state.bunkers[2].hp, 0);
 
-  // 3. Destroying Enemy HQ declares Allied victory cleanly and resetMatch restores state
+  // 3. Home Base HQ is immune to aircraft damage; ground units destroy Enemy HQ and declare victory
   state.hqs.enemy.hp = 100;
   p1.x = BASES.enemy.hqX - 350;
   p1.y = 45;
   p1.pitch = 0;
   p1.secondaryCooldown = 0;
   stepSimulation(state, { p1: { fireSecondary: true } });
-  for (let t = 0; t < 60; t++) {
+  for (let t = 0; t < 40; t++) {
+    stepSimulation(state, { p1: {} });
+  }
+  assert.equal(state.hqs.enemy.hp, 100, "Home base is immune from aircraft damage");
+
+  spawnGroundUnit(state, "allied", "mbt", BASES.enemy.hqX - 250);
+  for (let t = 0; t < 90; t++) {
     stepSimulation(state, { p1: {} });
     if (state.winner) break;
   }
@@ -2769,4 +2775,82 @@ test("Heli Bot AI: exhibits human-like reaction delay and tracking variance inst
     `Expected tracked elevation to catch up by tick 45 (delta=${(bot.botAi.trackedAirY - trackedBefore).toFixed(1)})`
   );
   assert.notEqual(bot.botAi.aimWanderY, 0, "Tracking variance (aimWanderY) is active");
+});
+
+test("Home bases are immune to aircraft weapons/bombs, ignored by bot aircraft, and heli bot fires looser air-to-air bursts", () => {
+  // 1. Home base is immune to aircraft bullets, heli missiles, P-47 dumb bombs, and B-52 carpet bombs
+  const state = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  for (const b of state.bunkers) b.owner = "allied";
+  const hqX = state.hqs.enemy.x;
+  const startHp = state.hqs.enemy.hp;
+
+  const heli = addPlayer(state, "bot_allied_1", "allied", "heli", { isBot: true });
+  heli.x = hqX - 350;
+  heli.y = 50;
+  heli.vx = 0;
+  heli.pitch = 0;
+  heli.landedAtBase = false;
+  heli.passengers = [];
+
+  // Bot aircraft should NOT target enemy HQ when no enemy ground units/bunkers exist
+  const heliBotInp = computeBotPilotInput(state, heli);
+  assert.notEqual(heli.botAi?.mode, "ground_attack", "Heli bot does not target enemy home base");
+  assert.equal(heliBotInp.firePrimary, false);
+  assert.equal(heliBotInp.fireSecondary, false);
+
+  const p47Bot = addPlayer(state, "bot_allied_2", "allied", "p47", { isBot: true });
+  p47Bot.x = hqX - 450;
+  p47Bot.y = 220;
+  p47Bot.vx = 380;
+  p47Bot.speed = 380;
+  p47Bot.dir = 1;
+  p47Bot.landedAtBase = false;
+  const p47BotInp = computeBotPilotInput(state, p47Bot);
+  assert.equal(p47BotInp.firePrimary, false, "P-47 bot does not strafe enemy home base");
+  assert.equal(p47BotInp.fireSecondary, false, "P-47 bot does not bomb enemy home base");
+
+  // Force aircraft projectiles (bullet, heli_missile, p47_bomb, b52_bomb) directly onto Enemy HQ
+  state.projectiles.push(
+    { id: "p_air_b", kind: "bullet", fromAircraft: true, team: "allied", x: hqX, y: 40, vx: 800, vy: 0, damage: 50, lifeTicks: 20 },
+    { id: "p_air_m", kind: "heli_missile", fromAircraft: true, team: "allied", x: hqX, y: 50, vx: 800, vy: 0, damage: 160, distanceTraveled: 0, maxFuelDistance: 4000, fuelBurnedOut: false, lifeTicks: 20 },
+    { id: "p_air_pb", kind: "p47_bomb", fromAircraft: true, team: "allied", x: hqX, y: 20, vx: 0, vy: -120, damage: 145, fuelBurnedOut: true, lifeTicks: 20 },
+    { id: "p_air_b52", kind: "b52_bomb", fromAircraft: true, team: "allied", x: hqX, y: 5, vx: 0, vy: -120, damage: 185, splashRadius: 95, fuelBurnedOut: true, lifeTicks: 20 }
+  );
+  for (let t = 0; t < 15; t++) stepSimulation(state, {});
+  assert.equal(state.hqs.enemy.hp, startHp, "Aircraft bullets, missiles, and bombs deal zero damage to home base");
+
+  // Ground unit (Howitzer splash + direct hit) DOES damage Enemy HQ
+  state.teamFunds.enemy = 0;
+  state.units = [];
+  spawnGroundUnit(state, "allied", "howitzer", hqX - 250);
+  for (let t = 0; t < 45; t++) stepSimulation(state, {});
+  assert.ok(state.hqs.enemy.hp < startHp, "Ground units can still attack and damage the home base");
+
+  // 2. Heli bot fires looser air-to-air primary bursts and secondary missiles without waiting for surgical alignment
+  const airState = createInitialState({ includePracticeTargets: false, includeCivilians: false, botsEnabled: true });
+  const aHeli = addPlayer(airState, "bot_allied_1", "allied", "heli", { isBot: true });
+  aHeli.x = -350;
+  aHeli.y = 150;
+  aHeli.vx = 0;
+  aHeli.pitch = 0;
+  aHeli.landedAtBase = false;
+  aHeli.passengers = [];
+
+  const eHeli = addPlayer(airState, "enemy_h", "enemy", "heli", { isBot: false });
+  eHeli.x = 50;
+  eHeli.y = 200; // 50px vertical separation (outside the old 28-36px exact hitbox tolerance)
+  eHeli.vx = 0;
+  eHeli.landedAtBase = false;
+
+  let primaryShots = 0;
+  let missileShots = 0;
+  for (let t = 0; t < 25; t++) {
+    stepSimulation(airState, { enemy_h: {} });
+    for (const ev of airState.events) {
+      if (ev.type === "primary_fired" && ev.playerId === aHeli.id) primaryShots += 1;
+      if (ev.type === "secondary_fired" && ev.playerId === aHeli.id) missileShots += 1;
+    }
+  }
+  assert.ok(primaryShots >= 2, `Expected spammy primary burst on offset air target (primaryShots=${primaryShots})`);
+  assert.ok(missileShots >= 1, `Expected secondary missile fired on offset air target (missileShots=${missileShots})`);
 });

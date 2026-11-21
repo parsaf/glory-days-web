@@ -171,9 +171,12 @@ export const HELI_BOT_CONFIG = {
   airReactionMinTicks: 6,         // Min visual perception sample interval (~100ms)
   airReactionMaxTicks: 10,        // Max visual perception sample interval (~167ms)
   airAimWanderMaxY: 26,           // Max gentle vertical tracking imperfection (±px)
-  airFireReactMinTicks: 3,        // Min trigger reaction delay on newly lined-up air target (~50ms)
-  airFireReactMaxTicks: 7,        // Max trigger reaction delay (~117ms)
-  airMissileReactBonusTicks: 3,   // Extra hesitation before launching air-to-air missiles
+  airPrimaryAimTolerance: 95,     // Vertical tolerance (px) for air-to-air primary cannon bursts
+  airSecondaryAimTolerance: 58,   // Vertical tolerance (px) for air-to-air missile shots
+  airPrimaryBurstHoldTicks: 14,   // Follow-through burst duration (~0.23s) once primary fires at air
+  airFireReactMinTicks: 1,        // Min trigger reaction delay on newly lined-up air target
+  airFireReactMaxTicks: 4,        // Max trigger reaction delay
+  airMissileReactBonusTicks: 2,   // Extra hesitation before launching air-to-air missiles
   airTacticMinTicks: 55,          // Min commitment to a chosen dogfight tactic (~0.9s)
   airTacticMaxTicks: 120          // Max commitment before re-scoring tactics (~2.0s)
 };

@@ -1979,7 +1979,7 @@ function applySplashDamage(state, x, y, team, baseDamage, splashRadius, skipIds 
 
   const enemyTeam = team === "allied" ? "enemy" : "allied";
   const hq = state.hqs[enemyTeam];
-  if (hq && hq.hp > 0 && !skipIds.has(`hq_${enemyTeam}`) && Math.abs(hq.x - x) <= splashRadius + 40 && y <= 160) {
+  if (!allowFriendlyGroundFire && hq && hq.hp > 0 && !skipIds.has(`hq_${enemyTeam}`) && Math.abs(hq.x - x) <= splashRadius + 40 && y <= 160) {
     const dist = Math.max(0, Math.abs(hq.x - x) - 40);
     const dmg = Math.round(baseDamage * calcFalloff(dist, 0.45));
     damageHq(state, hq, dmg, team);
@@ -2945,7 +2945,7 @@ function updateProjectiles(state) {
         }
       }
 
-      if (!hit) {
+      if (!hit && !isAircraftProj) {
         const enemyTeam = pr.team === "allied" ? "enemy" : "allied";
         const hq = state.hqs[enemyTeam];
         if (hq && hq.hp > 0 && Math.abs(pr.x - hq.x) <= 95 && pr.y >= 0 && pr.y <= 140) {
@@ -3211,7 +3211,8 @@ function ensureHeliBotAi(bot) {
       aimWanderY: 0,
       aimWanderTicks: 0,
       airAimLockTicks: 0,
-      airFireDelayTicks: 4,
+      airFireDelayTicks: 2,
+      airPrimaryBurstTicks: 0,
       threatNoticeTicks: 0
     };
   }
@@ -3572,8 +3573,7 @@ function selectGroundTarget(state, bot, front, forwardDir) {
     "main_battle_tank",
     "self_propelled_howitzer",
     "supply_truck",
-    "bunker",
-    "hq"
+    "bunker"
   ]);
 
   let best = null;
@@ -3658,10 +3658,8 @@ function selectGroundTarget(state, bot, front, forwardDir) {
     }, nearCapturable ? 290 : 170);
   }
 
-  let enemyBunkersAlive = 0;
   for (const b of state.bunkers) {
     if (b.owner !== enemyTeam || b.hp <= 0) continue;
-    enemyBunkersAlive += 1;
     if ((b.x - front.enemyFrontX) * forwardDir > HELI_BOT_CONFIG.bunkerMaxBehindFront) continue;
     const pri = b.hp < b.maxHp * 0.6 ? 440 : 320;
     scoreCandidate({
@@ -3676,24 +3674,6 @@ function selectGroundTarget(state, bot, front, forwardDir) {
       hp: b.hp,
       maxHp: b.maxHp
     }, pri);
-  }
-
-  const enemyHq = state.hqs?.[enemyTeam];
-  const hqExposed = (Math.abs(front.enemyHqX - front.enemyFrontX) <= 2200 && enemyBunkersAlive === 0)
-    || (!front.hasEnemyGround && !state.bunkers.some((b) => (b.x * forwardDir) >= 0 && b.owner !== bot.team));
-  if (enemyHq && enemyHq.hp > 0 && hqExposed) {
-    scoreCandidate({
-      id: `hq_${enemyTeam}`,
-      kind: "hq",
-      isAir: false,
-      isHighValue: true,
-      x: enemyHq.x,
-      centerY: 55,
-      minHitY: 0,
-      hitH: 140,
-      hp: enemyHq.hp,
-      maxHp: enemyHq.maxHp
-    }, 210);
   }
 
   return best;
@@ -3762,11 +3742,18 @@ function evaluateWeaponShot(bot, target, isMissile) {
     const relVx = vx - (target.vx || 0);
     if ((target.x - muzzleX) * relVx <= 0) return null;
     const t = (target.x - muzzleX) / relVx;
-    if (t <= 0 || t > 1.0) return null;
+    const maxFlightT = isMissile ? 1.05 : 1.15;
+    if (t <= 0 || t > maxFlightT) return null;
     const projY = muzzleY + vy * t;
     const targetY = target.centerY + (target.vy || 0) * t;
-    const tol = target.hitHalfH + (isMissile ? 0 : 8);
-    if (Math.abs(projY - targetY) > tol) return null;
+    const tol = isMissile
+      ? (HELI_BOT_CONFIG.airSecondaryAimTolerance ?? (target.hitHalfH + 26))
+      : (HELI_BOT_CONFIG.airPrimaryAimTolerance ?? (target.hitHalfH + 62));
+    const rayAligned = Math.abs(projY - targetY) <= tol;
+    const bandAligned = !isMissile
+      && Math.abs(target.x - muzzleX) <= 520
+      && Math.abs(muzzleY - targetY) <= tol * 0.85;
+    if (!rayAligned && !bandAligned) return null;
     return { t, muzzleX, muzzleY, vx, vy };
   }
 
@@ -3893,6 +3880,7 @@ function tryFireHeliWeapons(state, bot, inp, focusTarget) {
         airShotReady = true;
         if (!inp.firePrimary && pClear && ai.airAimLockTicks + 1 >= ai.airFireDelayTicks) {
           inp.firePrimary = true;
+          ai.airPrimaryBurstTicks = HELI_BOT_CONFIG.airPrimaryBurstHoldTicks;
         }
         if (!inp.fireSecondary && mClear && ai.airAimLockTicks + 1 >= ai.airFireDelayTicks + HELI_BOT_CONFIG.airMissileReactBonusTicks) {
           inp.fireSecondary = true;
@@ -3914,6 +3902,25 @@ function tryFireHeliWeapons(state, bot, inp, focusTarget) {
       }
     }
     if (inp.firePrimary && (inp.fireSecondary || bot.secondaryAmmo <= 0)) break;
+  }
+
+  if ((ai.airPrimaryBurstTicks || 0) > 0) {
+    ai.airPrimaryBurstTicks -= 1;
+    if (!inp.firePrimary) {
+      const muzzleX = bot.x + bot.dir * 38;
+      const muzzleY = bot.y + 8;
+      const speed = AIRCRAFT_CONFIG.heli.primarySpeed;
+      const vx = bot.dir * speed * Math.cos(bot.pitch) + (bot.vx || 0) * 0.25;
+      const vy = speed * Math.sin(bot.pitch);
+      const keepSpraying = candidates.some((c) => {
+        if (!c.isAir) return false;
+        const dx = (c.x - muzzleX) * bot.dir;
+        if (dx <= 20 || dx > 780 || Math.abs(c.centerY - muzzleY) > 140) return false;
+        const t = Math.max(0.05, (c.x - muzzleX) / vx);
+        return isRayClearOfFriendliesAndCivilians(state, bot, muzzleX, muzzleY, vx, vy, t, c.x);
+      });
+      if (keepSpraying) inp.firePrimary = true;
+    }
   }
 
   if (airShotReady) {
@@ -4597,7 +4604,7 @@ export function computeBotPilotInput(state, bot) {
     return inp;
   }
 
-  const nearEnemyBase = Math.abs(bot.x - enemyHqX) < 1150 && state.hqs[enemyTeam].hp > 800 && bot.dir === forwardDir;
+  const nearEnemyBase = Math.abs(bot.x - enemyHqX) < 1150 && bot.dir === forwardDir;
   const pastHomeSide = (bot.x - BASES[bot.team].hqX) * forwardDir < 500 && bot.dir === -forwardDir;
   const nearWorldEdge = (bot.x > MAX_X - 600 && bot.dir === 1) || (bot.x < MIN_X + 600 && bot.dir === -1);
   const wantTurn = nearEnemyBase || pastHomeSide || nearWorldEdge;
@@ -4647,7 +4654,7 @@ export function computeBotPilotInput(state, bot) {
 
   // Ground strafe / ballistic dumb bomb drops when cruising low
   if (bot.y < 380) {
-    const gTgt = findGroundEnemyTarget(state, bot.x, bot.team, 900);
+    const gTgt = findGroundEnemyTarget(state, bot.x, bot.team, 900, { includeHq: false });
     if (gTgt) {
       const dxForward = (gTgt.x - bot.x) * bot.dir;
       if (dxForward > 0) {
