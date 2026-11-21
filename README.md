@@ -8,7 +8,7 @@ Pilot either an **Attack & Transport Helicopter** or a **P-47 Thunderbolt** acro
 
 ## Quick Start
 
-**Requirements:** Node.js `>= 22.0.0` (zero external `npm` packages required).
+**Requirements:** Node.js `>= 22.0.0` (lean dependency footprint — currently requires no external `npm` packages, though new packages may be added when worthwhile).
 
 ```bash
 # Start the authoritative game & static server (default port 3000)
@@ -83,7 +83,7 @@ When you connect, you start in the **Pre-Match Lobby**:
 
 ```text
 glory days/
-├── package.json            # Pure Node ESM scripts (start, test); zero dependencies
+├── package.json            # Pure Node ESM scripts (start, test); lean dependency policy
 ├── server/
 │   └── index.mjs           # Static HTTP server, RFC 6455 WebSockets (/ws), multi-room 60 Hz loop & 20 Hz snapshots
 ├── shared/
@@ -92,12 +92,14 @@ glory days/
 ├── public/
 │   ├── index.html          # Main game viewport, DS-style bottom command deck & pre-match lobby UI
 │   ├── flight-lab.html     # Standalone P-47 physics test gym UI
-│   ├── assets/sprites/     # 42 transparent side-profile PNG sprites
+│   ├── assets/
+│   │   ├── landscape/      # Layered desert warfare parallax strips, clouds & sparse fortifications
+│   │   └── sprites/        # 42 transparent side-profile PNG sprites
 │   └── js/
 │       ├── main.mjs        # Client entry point, WS sync & local 60 Hz prediction loop
 │       ├── input.mjs       # Keyboard-only controller
 │       ├── hud.mjs         # HUD telemetry, lobby bindings, requisition drawer & 12,000m radar
-│       ├── renderer.mjs    # Layered 2.5D parallax Canvas sprite renderer & enemy hue-tint cache
+│       ├── renderer.mjs    # Layered 2.5D Option 3 desert warfare parallax Canvas renderer & enemy hue-tint cache
 │       ├── audio.mjs       # Procedural Web Audio API SFX synthesizer
 │       └── flight_lab.mjs  # Standalone P-47 tuning & scenario simulator
 ├── tests/

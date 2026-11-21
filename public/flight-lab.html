@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Glory Days — P-47 Flight Physics Test Lab</title>
+  <title>Glory Days — Flight Physics Test Lab (Chopper &amp; P-47)</title>
   <style>
     :root {
       --bg: #080d1a;
@@ -35,6 +35,11 @@
       width: 100%;
       height: 100%;
     }
+    @media (max-width: 1200px) {
+      #lab-shell {
+        grid-template-columns: minmax(0, 1fr) 350px;
+      }
+    }
     #lab-stage {
       display: flex;
       flex-direction: column;
@@ -43,15 +48,26 @@
       border-right: 1px solid var(--border);
     }
 
-    /* Top Gym Bar */
+    /* Top Gym Bar & Scenario Sub-bar */
     #lab-topbar {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      padding: 8px 12px;
+      padding: 7px 12px;
       background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      flex: 0 0 auto;
+    }
+    #lab-subbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 6px 12px;
+      background: #0d1424;
       border-bottom: 1px solid var(--border);
       flex: 0 0 auto;
     }
@@ -73,12 +89,37 @@
     }
     .lab-back:hover { background: #1e293b; color: #ffffff; border-color: #64748b; }
 
+    .craft-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--card);
+      color: #cbd5e1;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .craft-btn img {
+      height: 17px;
+      width: auto;
+      object-fit: contain;
+    }
+    .craft-btn:hover { background: #334155; color: #f8fafc; }
+    .craft-btn.active {
+      background: rgba(56, 189, 248, 0.22);
+      border-color: var(--accent);
+      color: #bae6fd;
+    }
+
     .scen-btn {
       background: var(--card);
       color: #cbd5e1;
       border: 1px solid #475569;
       border-radius: 6px;
-      padding: 5px 10px;
+      padding: 4px 9px;
       font-size: 11px;
       font-weight: 700;
       cursor: pointer;
@@ -131,11 +172,15 @@
       top: 10px;
       left: 12px;
       right: 12px;
+      pointer-events: none;
+    }
+    .legend-row {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex-wrap: wrap;
       gap: 10px;
-      pointer-events: none;
+      width: 100%;
     }
     .legend-pill {
       background: rgba(15, 23, 42, 0.8);
@@ -144,6 +189,7 @@
       padding: 4px 10px;
       font-size: 11px;
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 10px;
       backdrop-filter: blur(5px);
@@ -167,7 +213,7 @@
     }
 
     /* Bottom Telemetry Strip */
-    #lab-telemetry {
+    .lab-telemetry {
       background: var(--panel);
       border-top: 1px solid var(--border);
       padding: 8px 12px;
@@ -175,6 +221,14 @@
       grid-template-columns: 1.55fr 0.75fr 0.9fr 1.25fr;
       gap: 10px;
       flex: 0 0 auto;
+    }
+    #telemetry-heli {
+      grid-template-columns: 1.35fr 1.05fr 1.25fr 1.1fr;
+    }
+    @media (max-width: 1220px) {
+      .lab-telemetry, #telemetry-heli {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
     }
     .tel-box {
       background: var(--card);
@@ -191,6 +245,7 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 6px;
       font-size: 10px;
       font-weight: 800;
       letter-spacing: 0.04em;
@@ -202,17 +257,20 @@
       color: #f8fafc;
       font-size: 11px;
       text-transform: none;
+      white-space: nowrap;
     }
 
-    /* Speed Spectrum Ruler */
-    #spec-track {
+    /* Speed Spectrum & Bi-Directional Velocity Rulers */
+    #spec-track, .bi-track {
       position: relative;
       height: 20px;
       background: #0b1324;
       border: 1px solid #334155;
       border-radius: 5px;
       margin-top: 2px;
+      overflow: hidden;
     }
+    #spec-track { overflow: visible; }
     #spec-fill {
       position: absolute;
       left: 0;
@@ -221,7 +279,7 @@
       background: linear-gradient(90deg, rgba(239, 68, 68, 0.55), rgba(245, 158, 11, 0.55) 40%, rgba(34, 197, 94, 0.55));
       border-radius: 4px 0 0 4px;
     }
-    #spec-needle {
+    #spec-needle, .bi-needle {
       position: absolute;
       top: -2px;
       bottom: -2px;
@@ -230,6 +288,29 @@
       box-shadow: 0 0 6px #ffffff;
       transform: translateX(-1px);
       z-index: 4;
+    }
+    .bi-needle { top: 0; bottom: 0; }
+    .bi-zero {
+      position: absolute;
+      left: 50%;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      background: rgba(148, 163, 184, 0.5);
+      z-index: 2;
+    }
+    .bi-zone {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      z-index: 1;
+    }
+    .bi-fill {
+      position: absolute;
+      top: 3px;
+      bottom: 3px;
+      z-index: 3;
+      border-radius: 2px;
     }
     .spec-pin {
       position: absolute;
@@ -268,6 +349,8 @@
     .timer-label {
       display: flex;
       justify-content: space-between;
+      align-items: center;
+      gap: 6px;
       font-size: 10px;
       color: #cbd5e1;
       font-family: ui-monospace, monospace;
@@ -402,25 +485,27 @@
       <header id="lab-topbar">
         <div class="topbar-left">
           <a href="/" class="lab-back">← Main Game</a>
-          <strong style="font-size:12px;color:#fbbf24;letter-spacing:0.04em;">P-47 FLIGHT LAB</strong>
-          <button class="scen-btn active" data-scenario="stall" type="button">4-Stage Glide &amp; Descent</button>
-          <button class="scen-btn" data-scenario="cruise" type="button">Stage 1 Cruise</button>
-          <button class="scen-btn" data-scenario="brake" type="button">Brake &amp; Turnaround</button>
-          <button class="scen-btn" data-scenario="bounce" type="button">Bounce Impact</button>
-          <button class="scen-btn" data-scenario="crash" type="button">Crash Slide</button>
-          <button class="scen-btn" data-scenario="runway" type="button">Runway Takeoff</button>
+          <strong style="font-size:12px;color:#fbbf24;letter-spacing:0.04em;">FLIGHT LAB</strong>
+          <button class="craft-btn" data-aircraft="heli" type="button">
+            <img src="/assets/sprites/heli_fly_1.png" alt="Chopper" />
+            <span>Chopper</span>
+          </button>
+          <button class="craft-btn active" data-aircraft="p47" type="button">
+            <img src="/assets/sprites/p47_fly_1.png" alt="P-47" />
+            <span>P-47</span>
+          </button>
         </div>
 
         <div class="topbar-right">
-          <label class="gym-toggle" title="Maintain full Stage 1 throttle hands-free at cruise/max speed">
+          <label id="wrap-auto-throttle" class="gym-toggle" title="Maintain full Stage 1 throttle hands-free at cruise/max speed">
             <input id="opt-auto-throttle" type="checkbox" />
-            <span>Auto-Throttle</span>
+            <span id="lbl-auto-throttle">Auto-Throttle</span>
           </label>
-          <label class="gym-toggle" title="Automatically respawn Stall, Bounce, and Crash scenarios after finishing">
+          <label class="gym-toggle" title="Automatically respawn scenario after finishing or crashing">
             <input id="opt-auto-loop" type="checkbox" checked />
             <span>Auto-Loop</span>
           </label>
-          <label class="gym-toggle" title="Draw live 2.5s predicted trajectory curve & pitch reference rays">
+          <label class="gym-toggle" title="Draw live 2.5s predicted trajectory curve &amp; pitch reference rays">
             <input id="opt-show-overlay" type="checkbox" checked />
             <span>2.5s Curve &amp; Vectors</span>
           </label>
@@ -433,28 +518,76 @@
         </div>
       </header>
 
+      <div id="lab-subbar">
+        <div id="scenarios-p47" class="topbar-left">
+          <button class="scen-btn active" data-aircraft="p47" data-scenario="stall" type="button">4-Stage Glide &amp; Descent</button>
+          <button class="scen-btn" data-aircraft="p47" data-scenario="cruise" type="button">Stage 1 Cruise</button>
+          <button class="scen-btn" data-aircraft="p47" data-scenario="brake" type="button">Brake &amp; Turnaround</button>
+          <button class="scen-btn" data-aircraft="p47" data-scenario="bounce" type="button">Bounce Impact</button>
+          <button class="scen-btn" data-aircraft="p47" data-scenario="crash" type="button">Crash Slide</button>
+          <button class="scen-btn" data-aircraft="p47" data-scenario="runway" type="button">Runway Takeoff</button>
+        </div>
+
+        <div id="scenarios-heli" class="topbar-left" style="display:none;">
+          <button class="scen-btn active" data-aircraft="heli" data-scenario="hover" type="button">Hover &amp; Sink</button>
+          <button class="scen-btn" data-aircraft="heli" data-scenario="turn" type="button">Dash &amp; Turnaround</button>
+          <button class="scen-btn" data-aircraft="heli" data-scenario="weapons" type="button">Weapons &amp; Aim</button>
+          <button class="scen-btn" data-aircraft="heli" data-scenario="paratroop" type="button">Paratroop &amp; Pickup</button>
+          <button class="scen-btn" data-aircraft="heli" data-scenario="rescue" type="button">Civilian Rescue</button>
+          <button class="scen-btn" data-aircraft="heli" data-scenario="hard_landing" type="button">Hard Landing / Crash</button>
+          <button class="scen-btn" data-aircraft="heli" data-scenario="helipad" type="button">Helipad Takeoff</button>
+        </div>
+
+        <div class="topbar-right">
+          <button id="lab-respawn-btn" class="lab-back" style="cursor:pointer;" type="button" title="Reset and respawn current scenario (R)">Respawn (R)</button>
+        </div>
+      </div>
+
       <div id="viewport-wrap">
         <canvas id="battlefield"></canvas>
 
         <div id="overlay-legend">
-          <div class="legend-pill">
-            <span><span class="dot" style="background:#22c55e;"></span>S1 Full Lift</span>
-            <span><span class="dot" style="background:#38bdf8;"></span>S2 Grace Lift</span>
-            <span><span class="dot" style="background:#f59e0b;"></span>S3 Slow Descent</span>
-            <span><span class="dot" style="background:#ef4444;"></span>S4 Fast Descent</span>
-            <span><span class="dot" style="background:#22d3ee;"></span>Bounce</span>
-            <span><span class="dot" style="background:#f97316;"></span>Crash Slide</span>
+          <div id="legend-p47" class="legend-row">
+            <div class="legend-pill">
+              <span><span class="dot" style="background:#22c55e;"></span>S1 Full Lift</span>
+              <span><span class="dot" style="background:#38bdf8;"></span>S2 Grace Lift</span>
+              <span><span class="dot" style="background:#f59e0b;"></span>S3 Slow Descent</span>
+              <span><span class="dot" style="background:#ef4444;"></span>S4 Fast Descent</span>
+              <span><span class="dot" style="background:#22d3ee;"></span>Bounce</span>
+              <span><span class="dot" style="background:#f97316;"></span>Crash Slide</span>
+            </div>
+            <div class="legend-pill" style="color:#cbd5e1;">
+              <span><span class="kbd">→</span> Throttle</span>
+              <span><span class="kbd">←</span> Tap/Hold Brake→Turn</span>
+              <span><span class="kbd">↑</span><span class="kbd">↓</span> Tilt / Counter</span>
+              <span><span class="kbd">Space</span> Pause</span>
+            </div>
           </div>
-          <div class="legend-pill" style="color:#cbd5e1;">
-            <span><span class="kbd">→</span> Throttle</span>
-            <span><span class="kbd">←</span> Tap/Hold Brake→Turn</span>
-            <span><span class="kbd">↑</span><span class="kbd">↓</span> Tilt / Counter</span>
-            <span><span class="kbd">Space</span> Pause</span>
+
+          <div id="legend-heli" class="legend-row" style="display:none;">
+            <div class="legend-pill">
+              <span><span class="dot" style="background:#22c55e;"></span>Climb / Flight</span>
+              <span><span class="dot" style="background:#38bdf8;"></span>Hover / Sink</span>
+              <span><span class="dot" style="background:#a855f7;"></span>Yaw Turn</span>
+              <span><span class="dot" style="background:#f59e0b;"></span>Fast Dive</span>
+              <span><span class="dot" style="background:#ef4444;"></span>Crash Impact</span>
+              <span><span class="dot" style="background:#22d3ee;"></span>Safe Land</span>
+            </div>
+            <div class="legend-pill" style="color:#cbd5e1;">
+              <span><span class="kbd">←</span><span class="kbd">→</span><span class="kbd">↑</span><span class="kbd">↓</span> Fly</span>
+              <span><span class="kbd">A</span> Gun</span>
+              <span><span class="kbd">S</span> Missile</span>
+              <span><span class="kbd">E</span> Paratroop/Load</span>
+              <span><span class="kbd">↓</span> Board</span>
+              <span><span class="kbd">Space</span> Pause</span>
+              <span><span class="kbd">R</span> Respawn</span>
+            </div>
           </div>
         </div>
       </div>
 
-      <footer id="lab-telemetry">
+      <!-- P-47 Telemetry Strip -->
+      <footer id="telemetry-p47" class="lab-telemetry">
         <div class="tel-box">
           <div class="tel-head">
             <span>Speed Spectrum</span>
@@ -498,11 +631,75 @@
           </div>
         </div>
       </footer>
+
+      <!-- Chopper Telemetry Strip -->
+      <footer id="telemetry-heli" class="lab-telemetry" style="display:none;">
+        <div class="tel-box">
+          <div class="tel-head">
+            <span>Horizontal Velocity</span>
+            <strong id="heli-vx-readout">VX: +0 / ±280 px/s</strong>
+          </div>
+          <div id="heli-vx-track" class="bi-track">
+            <div id="heli-vx-board-zone" class="bi-zone" style="background:rgba(34, 197, 94, 0.22);"></div>
+            <div class="bi-zero"></div>
+            <div id="heli-pin-turn" class="spec-pin" style="background:#a855f7;"><span style="color:#e9d5ff;">TRN</span></div>
+            <div id="heli-vx-fill" class="bi-fill" style="background:#38bdf8;"></div>
+            <div id="heli-vx-needle" class="bi-needle" style="left:50%;"></div>
+          </div>
+          <div class="timer-label">
+            <span id="heli-vx-min">-280</span>
+            <span id="heli-vx-board-lbl" style="color:#86efac;">±95 BOARD</span>
+            <span id="heli-vx-max">+280</span>
+          </div>
+        </div>
+
+        <div class="tel-box">
+          <div class="tel-head">
+            <span>Vertical Collective</span>
+            <strong id="heli-vy-readout">VY: 0 px/s</strong>
+          </div>
+          <div id="heli-vy-track" class="bi-track">
+            <div id="heli-vy-crash-zone" class="bi-zone" style="left:0;background:rgba(239, 68, 68, 0.35);"></div>
+            <div class="bi-zero"></div>
+            <div id="heli-vy-sink-pin" class="spec-pin" style="background:#38bdf8;"><span style="color:#bae6fd;">SNK</span></div>
+            <div id="heli-vy-fill" class="bi-fill" style="background:#22c55e;"></div>
+            <div id="heli-vy-needle" class="bi-needle" style="left:50%;"></div>
+          </div>
+          <div class="timer-label" id="heli-phase" style="color:#38bdf8;font-weight:800;">HOVER / IDLE SINK</div>
+        </div>
+
+        <div class="tel-box">
+          <div class="timer-row">
+            <div class="timer-label">
+              <span>Gun Burst <span class="kbd">A</span></span>
+              <span id="heli-burst-readout">90/90 • READY (12/s)</span>
+            </div>
+            <div class="bar-track"><div id="heli-burst-fill" class="bar-fill" style="width:100%;background:#22c55e;"></div></div>
+          </div>
+          <div class="timer-label">
+            <span>Missiles <span class="kbd">S</span>: <strong id="heli-ammo-readout" style="color:#f8fafc;">8 / 8</strong></span>
+            <span>Boarding: <strong id="heli-board-status" style="color:#22c55e;">READY</strong></span>
+          </div>
+          <div class="timer-label">
+            <span>Cabin <span class="kbd">E</span>/<span class="kbd">↓</span></span>
+            <strong id="heli-cabin-readout" style="color:#fde047;">4 INF • 0 CIV (4/8)</strong>
+          </div>
+        </div>
+
+        <div class="tel-box">
+          <div class="metrics-grid">
+            <div class="metric-cell"><span>PITCH</span><strong id="heli-tel-pitch">0.0°</strong></div>
+            <div class="metric-cell"><span>GUN AIM</span><strong id="heli-tel-gun-aim">0.0°</strong></div>
+            <div class="metric-cell"><span>VX / VY</span><strong id="heli-tel-vxvy">0 / 0</strong></div>
+            <div class="metric-cell"><span>ALT / HP</span><strong id="heli-tel-alt">260m • 350/350</strong></div>
+          </div>
+        </div>
+      </footer>
     </section>
 
-    <aside id="lab-dock" aria-label="P-47 Parameters">
+    <aside id="lab-dock" aria-label="Aircraft Parameters">
       <div class="dock-header">
-        <strong id="dock-param-count" style="font-size:12px;color:#fbbf24;letter-spacing:0.04em;">P-47 TUNABLE PARAMETERS</strong>
+        <strong id="dock-param-count" style="font-size:12px;color:#fbbf24;letter-spacing:0.04em;">P-47 • TUNABLE PARAMETERS</strong>
         <span id="lab-net-status">STANDALONE LOCAL</span>
       </div>
 

@@ -17,10 +17,12 @@ import {
   CIVILIAN_KILL_PENALTY,
   DEFAULT_BUNKER_CONFIG,
   DEFAULT_GROUND_BEHAVIOR_CONFIG,
+  DEFAULT_HELI_CONFIG,
   DEFAULT_UNIT_CONFIG,
   DEFENSE_CONFIG,
   GRAVITY,
   GROUND_BEHAVIOR_CONFIG,
+  HELI_TUNING_SCHEMA,
   MISSILE_FUEL_DISTANCE,
   SLOW_FIRE_INTERVAL,
   SPECIAL_WEAPON_CIV_GOAL_BASE,
@@ -51,12 +53,15 @@ import {
   setPlayerLobbyChoice,
   spawnCivilian,
   spawnGroundUnit,
+  spawnPlayerHeliTest,
   spawnPlayerP47Test,
   startMatch,
   stepSimulation,
   swapPlayerAircraft,
   syncBotPlayers,
   updateGroundConfig,
+  updateHeli,
+  updateHeliConfig,
   updateP47Config
 } from "../shared/simulation.mjs";
 
@@ -3129,4 +3134,202 @@ test("P-47 Bot AI: evades incoming SAMs without ground impact and exhibits human
     `Expected P-47 tracked elevation to catch up by tick 45 (delta=${(bot.botAi.trackedAirY - trackedBefore).toFixed(1)})`
   );
   assert.notEqual(bot.botAi.aimWanderY, 0, "P-47 tracking variance (aimWanderY) is active");
+});
+
+test("Chopper Flight Lab config patching (updateHeliConfig), schema completeness, and reset work cleanly", () => {
+  try {
+    // 1. Verify every HELI_TUNING_SCHEMA key exists as a finite number in DEFAULT_HELI_CONFIG
+    let schemaKeyCount = 0;
+    for (const group of HELI_TUNING_SCHEMA) {
+      for (const item of group.items) {
+        schemaKeyCount += 1;
+        assert.equal(typeof DEFAULT_HELI_CONFIG[item.key], "number", `Schema key ${item.key} exists as number in DEFAULT_HELI_CONFIG`);
+        assert.ok(Number.isFinite(DEFAULT_HELI_CONFIG[item.key]), `Schema key ${item.key} is finite`);
+      }
+    }
+    assert.equal(schemaKeyCount, 28);
+
+    // 2. Patching updates fields, syncs missileDamage <-> secondaryDamage, and ignores unknown keys
+    const updated = updateHeliConfig({
+      idleSinkSpeed: 0,
+      maxSpeedX: 340,
+      missileDamage: 210,
+      bogusHeliKey: 999
+    });
+    assert.equal(updated.idleSinkSpeed, 0);
+    assert.equal(updated.maxSpeedX, 340);
+    assert.equal(updated.missileDamage, 210);
+    assert.equal(updated.secondaryDamage, 210, "missileDamage syncs secondaryDamage");
+    assert.equal("bogusHeliKey" in updated, false);
+
+    const syncedBack = updateHeliConfig({ secondaryDamage: 185 });
+    assert.equal(syncedBack.missileDamage, 185, "secondaryDamage syncs missileDamage");
+
+    // 3. Reset restores defaults
+    const resetCfg = updateHeliConfig({ reset: true });
+    assert.equal(resetCfg.idleSinkSpeed, DEFAULT_HELI_CONFIG.idleSinkSpeed);
+    assert.equal(resetCfg.maxSpeedX, DEFAULT_HELI_CONFIG.maxSpeedX);
+    assert.equal(resetCfg.missileDamage, DEFAULT_HELI_CONFIG.missileDamage);
+    assert.equal(resetCfg.secondaryDamage, DEFAULT_HELI_CONFIG.secondaryDamage);
+  } finally {
+    updateHeliConfig({ reset: true });
+  }
+});
+
+test("Chopper Flight Lab tuned updateHeli physics (sink, drag, tilt, turnaround, crash threshold) respond accurately", () => {
+  try {
+    // 1. idleSinkSpeed = 0 produces zero-sink hover; higher idleSinkSpeed sinks faster
+    updateHeliConfig({ idleSinkSpeed: 0 });
+    const sHover = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    const hZero = addPlayer(sHover, "p1", "allied", "heli");
+    hZero.x = 0;
+    hZero.y = 240;
+    for (let t = 0; t < 60; t++) stepSimulation(sHover, { p1: {} });
+    assert.equal(hZero.y, 240, "idleSinkSpeed = 0 hovers with zero sink");
+
+    updateHeliConfig({ idleSinkSpeed: 80, verticalDamping: 8 });
+    const yBeforeSink = hZero.y;
+    for (let t = 0; t < 60; t++) stepSimulation(sHover, { p1: {} });
+    assert.ok(hZero.y < yBeforeSink - 50, "Higher idleSinkSpeed pulls helicopter down rapidly");
+
+    // 2. crashLandingVy controls off-pad crash vs safe landing threshold
+    updateHeliConfig({ reset: true, crashLandingVy: 90 });
+    const sCrash = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    const hCrash = addPlayer(sCrash, "p1", "allied", "heli");
+    hCrash.x = 0;
+    hCrash.y = 1.5;
+    hCrash.vy = -110; // Exceeds tuned 90 px/s crash threshold (safe under default 185)
+    stepSimulation(sCrash, { p1: { down: true } });
+    assert.equal(hCrash.alive, false, "Off-pad impact exceeding tuned crashLandingVy crashes chopper");
+
+    updateHeliConfig({ crashLandingVy: 220 });
+    const hSafe = addPlayer(sCrash, "p2", "allied", "heli");
+    hSafe.x = 100;
+    hSafe.y = 1.5;
+    hSafe.vy = -150;
+    stepSimulation(sCrash, { p2: {} });
+    assert.equal(hSafe.alive, true, "Impact slower than raised crashLandingVy lands safely");
+    assert.equal(hSafe.y, 0);
+
+    // 3. maxTiltPitch scales nose tilt & horizDragRate controls off-input coasting deceleration
+    updateHeliConfig({ reset: true, maxTiltPitch: 0.42, tiltResponse: 15, horizDragRate: 0.5 });
+    const sTilt = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    const hTilt = addPlayer(sTilt, "p1", "allied", "heli");
+    hTilt.x = -500;
+    hTilt.y = 220;
+    hTilt.vx = DEFAULT_HELI_CONFIG.maxSpeedX;
+    for (let t = 0; t < 30; t++) updateHeli(hTilt, { right: true }, 1 / 60);
+    assert.ok(hTilt.pitch < -0.35, "maxTiltPitch governs full-speed nose tilt angle");
+
+    const vxStartLowDrag = hTilt.vx;
+    for (let t = 0; t < 30; t++) updateHeli(hTilt, {}, 1 / 60);
+    const vxAfterLowDrag = hTilt.vx;
+
+    updateHeliConfig({ horizDragRate: 6.0 });
+    const hHighDrag = addPlayer(sTilt, "p2", "allied", "heli");
+    hHighDrag.x = -500;
+    hHighDrag.y = 220;
+    hHighDrag.vx = vxStartLowDrag;
+    for (let t = 0; t < 30; t++) updateHeli(hHighDrag, {}, 1 / 60);
+    assert.ok(hHighDrag.vx < vxAfterLowDrag * 0.4, "Higher horizDragRate decelerates chopper faster off-input");
+
+    // 4. turnDuration & turnSpeedThreshold control turnaround trigger & timing
+    updateHeliConfig({ reset: true, turnDuration: 0.25, turnSpeedThreshold: 180 });
+    const sTurn = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    const hTurn = addPlayer(sTurn, "p1", "allied", "heli");
+    hTurn.x = 0;
+    hTurn.y = 240;
+    hTurn.dir = 1;
+    hTurn.vx = 140; // Below tuned threshold 180 (would NOT flip under default 35)
+    stepSimulation(sTurn, { p1: { left: true } });
+    assert.ok(hTurn.turnTimer > 0, "turnSpeedThreshold allows reversing at higher forward speed");
+    assert.equal(hTurn.turnDuration, 0.25, "turnDuration syncs onto player during turnaround");
+    for (let t = 0; t < 18; t++) stepSimulation(sTurn, { p1: {} });
+    assert.equal(hTurn.turnTimer, 0, "Shorter turnDuration completes turnaround faster");
+    assert.equal(hTurn.dir, -1);
+  } finally {
+    updateHeliConfig({ reset: true });
+  }
+});
+
+test("Chopper Flight Lab tuned weapons, boarding/rescue envelopes, paratroopers, and spawnPlayerHeliTest scenarios work", () => {
+  try {
+    // 1. primaryAngleDeg changes bullet angle & missileFuelDistance controls burnout range
+    updateHeliConfig({ primaryAngleDeg: -15, missileFuelDistance: 600 });
+    const wState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    const hWep = addPlayer(wState, "p1", "allied", "heli");
+    hWep.x = -2000;
+    hWep.y = 400;
+    hWep.vx = 0;
+    hWep.pitch = 0;
+    stepSimulation(wState, { p1: { firePrimary: true, fireSecondary: true } });
+
+    const bullet = wState.projectiles.find((p) => p.kind === "bullet");
+    assert.ok(bullet && bullet.vy < -200, "Negative primaryAngleDeg aims primary autocannon downward");
+
+    const missile = wState.projectiles.find((p) => p.kind === "heli_missile");
+    assert.equal(missile.maxFuelDistance, 600, "missileFuelDistance overrides missile fuel cutoff");
+    for (let t = 0; t < 60; t++) stepSimulation(wState, { p1: {} });
+    assert.equal(missile.fuelBurnedOut, true, "Missile burns out early at tuned missileFuelDistance");
+
+    // 2. pickupMaxAlt, pickupMaxSpeed, and civAttractRadius govern civilian attraction without altering Ambulance 180m cap
+    updateHeliConfig({ reset: true, pickupMaxAlt: 35, pickupMaxSpeed: 150, civAttractRadius: 320 });
+    const rState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    const hResc = addPlayer(rState, "p1", "allied", "heli");
+    hResc.x = 0;
+    hResc.y = 28; // Above default 15m, inside tuned 35m
+    hResc.vx = 120; // Above default 95, inside tuned 150
+    hResc.passengers = [];
+    const civ = spawnCivilian(rState, 280, 280); // Outside default 180m, inside tuned 320m
+    const ambTestState = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    const amb = spawnGroundUnit(ambTestState, "allied", "ambulance", 0);
+    amb.holdPosition = true;
+    const ambCiv = spawnCivilian(ambTestState, 280, 280);
+    stepSimulation(rState, { p1: {} });
+    stepSimulation(ambTestState, {});
+    assert.notEqual(civ.state, "wave", "Civilian spots helicopter within tuned civAttractRadius");
+    assert.equal(ambCiv.state, "wave", "Ambulance attract radius stays strictly at 180m");
+
+    // 3. paraDropVxFactor and paraDescentSpeed govern paratrooper drop physics
+    updateHeliConfig({ paraDropVxFactor: 0.8, paraDescentSpeed: 120 });
+    hResc.x = 0;
+    hResc.y = 200;
+    hResc.vx = 200;
+    hResc.passengers = ["infantry"];
+    assert.equal(handlePlayerUtility(rState, "p1"), true);
+    const para = rState.paratroopers[0];
+    assert.ok(para, "Paratrooper spawned");
+    assert.equal(para.vx, 160, "paraDropVxFactor scales inherited horizontal velocity");
+    assert.equal(para.vy, -120, "paraDescentSpeed sets vertical descent velocity");
+
+    // 4. spawnPlayerHeliTest creates expected chopper setups for all 7 modes
+    updateHeliConfig({ reset: true });
+    for (const mode of ["hover", "turn", "weapons", "paratroop", "rescue", "hard_landing", "helipad"]) {
+      const s = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+      const p = addPlayer(s, "p1", "allied", "p47");
+      assert.equal(spawnPlayerHeliTest(s, "p1", mode), true, `spawnPlayerHeliTest(${mode}) succeeds`);
+      assert.equal(p.aircraftType, "heli");
+      assert.equal(p.alive, true);
+      if (mode === "turn") assert.ok(p.vx > 200);
+      if (mode === "weapons") {
+        assert.ok(s.units.length >= 4 && s.units.every((u) => u.passiveDummy && u.holdPosition));
+        assert.equal(s.bunkers[2].owner, "enemy");
+        assert.equal(s.bunkers[2].passiveDummy, true);
+      }
+      if (mode === "paratroop") {
+        assert.equal(s.bunkers[2].owner, "neutral");
+        assert.equal(s.units.filter((u) => u.team === "allied" && u.kind === "infantry").length, 3);
+        assert.ok(p.passengers.length >= 1);
+      }
+      if (mode === "rescue") assert.equal(s.civilians.length, 4);
+      if (mode === "hard_landing") assert.ok(p.vy < -50);
+      if (mode === "helipad") {
+        assert.equal(p.landedAtBase, true);
+        assert.equal(p.y, 0);
+        assert.ok(p.hp < p.maxHp);
+      }
+    }
+  } finally {
+    updateHeliConfig({ reset: true });
+  }
 });

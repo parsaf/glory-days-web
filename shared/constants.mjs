@@ -52,17 +52,31 @@ export const AIRCRAFT_CONFIG = {
     maxSpeedY: 210,
     accelX: 520,
     accelY: 560,
+    horizDragRate: 2.53,
+    groundDragRate: 4.6,
+    verticalDamping: 3.0,
+    maxTiltPitch: 0.24,
+    tiltResponse: 8.0,
     maxSecondary: 8,
     secondaryCooldownTicks: 22,
     cabinCapacity: 8,
     turnDuration: 0.54,
+    turnSpeedThreshold: 35,
+    turnDriftScale: 0.45,
     idleSinkSpeed: 24,
+    crashLandingVy: 185,
     primarySpeed: 1050,
     primaryAngleDeg: 0, // straight out front of cockpit (tilts with pitch)
     primaryDamage: 14,
     missileSpeed: 820,
     missileDamage: 160,
     secondaryDamage: 160,
+    missileFuelDistance: 4000,
+    pickupMaxAlt: 15,
+    pickupMaxSpeed: 95,
+    civAttractRadius: 180,
+    paraDropVxFactor: 0.25,
+    paraDescentSpeed: 65,
     hitRadius: 34
   },
   p47: {
@@ -114,6 +128,7 @@ export const AIRCRAFT_CONFIG = {
   }
 };
 
+export const DEFAULT_HELI_CONFIG = Object.freeze({ ...AIRCRAFT_CONFIG.heli });
 export const DEFAULT_P47_CONFIG = Object.freeze({ ...AIRCRAFT_CONFIG.p47 });
 
 export const HELI_BOT_CONFIG = {
@@ -230,6 +245,62 @@ export const P47_BOT_CONFIG = {
   evadeCooldownTicks: 20,         // Cooldown after maneuver unless imminent hit (< 0.45s)
   evadeFloorY: 105                // Never dive below this altitude during evasion
 };
+
+export const HELI_TUNING_SCHEMA = [
+  {
+    group: "Horizontal Flight & Tilt Aiming",
+    items: [
+      { key: "maxSpeedX", label: "Max Horizontal Speed", min: 100, max: 550, step: 10, unit: "px/s", desc: "Top forward or reverse horizontal flight speed." },
+      { key: "accelX", label: "Horizontal Thrust Accel", min: 150, max: 1200, step: 10, unit: "px/s²", desc: "Horizontal thrust acceleration when holding Left/Right." },
+      { key: "horizDragRate", label: "Airborne Horizontal Drag", min: 0.2, max: 8.0, step: 0.1, unit: "1/s", desc: "Exponential horizontal speed damping rate when Left/Right is released." },
+      { key: "maxTiltPitch", label: "Max Nose Tilt Angle", min: 0.04, max: 0.60, step: 0.01, unit: "rad", desc: "Steepest forward/backward pitch tilt reached at full horizontal speed (affects cockpit weapon aim)." },
+      { key: "tiltResponse", label: "Tilt Responsiveness", min: 1.0, max: 20.0, step: 0.5, unit: "1/s", desc: "How quickly the fuselage pitches toward its target tilt angle." }
+    ]
+  },
+  {
+    group: "Vertical Collective, Hover & Landing",
+    items: [
+      { key: "maxSpeedY", label: "Max Climb / Dive Speed", min: 80, max: 450, step: 10, unit: "px/s", desc: "Maximum vertical climb and descent speed." },
+      { key: "accelY", label: "Collective Accel", min: 150, max: 1200, step: 10, unit: "px/s²", desc: "Vertical thrust acceleration when holding Up/Down." },
+      { key: "idleSinkSpeed", label: "Hands-Off Idle Sink", min: 0, max: 120, step: 2, unit: "px/s", desc: "Gentle downward drift rate when airborne without Up/Down input (0 = true hover lock)." },
+      { key: "verticalDamping", label: "Vertical Settle Damping", min: 0.5, max: 10.0, step: 0.2, unit: "1/s", desc: "How fast vertical velocity settles toward idle sink when Up/Down is released." },
+      { key: "crashLandingVy", label: "Off-Pad Crash Threshold", min: 60, max: 350, step: 5, unit: "px/s", desc: "Downward impact speed magnitude off the friendly base pad that causes a fatal crash." }
+    ]
+  },
+  {
+    group: "Airborne Turnaround (Yaw)",
+    items: [
+      { key: "turnDuration", label: "Yaw Turn Duration", min: 0.15, max: 1.50, step: 0.02, unit: "s", desc: "Time taken to pivot 180° left/right using heli_turn frames." },
+      { key: "turnSpeedThreshold", label: "Turn Trigger Forward Speed", min: -80, max: 200, step: 5, unit: "px/s", desc: "Max forward velocity (vx * dir) at which opposite input triggers an airborne 180° flip." },
+      { key: "turnDriftScale", label: "Turnaround Drift Scale", min: 0, max: 1.2, step: 0.05, unit: "×", desc: "Horizontal drift multiplier preserved during the yaw turnaround arc." }
+    ]
+  },
+  {
+    group: "Weapons & Hull",
+    items: [
+      { key: "maxHp", label: "Hull Max HP", min: 100, max: 800, step: 10, unit: "HP", desc: "Maximum helicopter armor hit points." },
+      { key: "primaryAngleDeg", label: "Gun Mount Depression", min: -35, max: 15, step: 1, unit: "deg", desc: "Static cockpit gun angle offset added to fuselage pitch (0° = straight ahead)." },
+      { key: "primarySpeed", label: "Autocannon Muzzle Speed", min: 500, max: 1800, step: 25, unit: "px/s", desc: "Velocity of primary gun bullets." },
+      { key: "primaryDamage", label: "Autocannon Damage", min: 4, max: 50, step: 1, unit: "dmg", desc: "Damage inflicted per primary gun round." },
+      { key: "maxSecondary", label: "Missile Rack Capacity", min: 1, max: 16, step: 1, unit: "msl", desc: "Maximum secondary missiles carried before needing base reload." },
+      { key: "secondaryCooldownTicks", label: "Missile Reload Cooldown", min: 5, max: 60, step: 1, unit: "ticks", desc: "60 Hz ticks between consecutive secondary missile shots." },
+      { key: "missileSpeed", label: "Missile Flight Speed", min: 350, max: 1400, step: 20, unit: "px/s", desc: "Straight-line cruise velocity of secondary missiles." },
+      { key: "missileDamage", label: "Missile Damage", min: 40, max: 350, step: 10, unit: "dmg", desc: "Impact damage dealt by each helicopter missile." },
+      { key: "missileFuelDistance", label: "Missile Fuel Range", min: 400, max: 6000, step: 100, unit: "m", desc: "Straight-line powered distance before missile fuel burns out and drops under gravity." }
+    ]
+  },
+  {
+    group: "Transport, Paratroopers & Rescue",
+    items: [
+      { key: "cabinCapacity", label: "Cabin Passenger Capacity", min: 2, max: 16, step: 1, unit: "slots", desc: "Max combined infantry and rescued civilians carried onboard." },
+      { key: "pickupMaxAlt", label: "Max Pickup / Boarding Alt", min: 5, max: 60, step: 1, unit: "m", desc: "Highest altitude allowing civilian boarding, infantry loading, and low-hover troop dropoff." },
+      { key: "pickupMaxSpeed", label: "Max Pickup Horiz Speed", min: 20, max: 220, step: 5, unit: "px/s", desc: "Fastest horizontal speed |vx| allowed when boarding civilians or friendly infantry." },
+      { key: "civAttractRadius", label: "Civilian Attract Radius", min: 60, max: 450, step: 10, unit: "m", desc: "Horizontal distance from which stranded civilians notice a low chopper and sprint to board." },
+      { key: "paraDropVxFactor", label: "Paratroop Drift Inherited", min: 0, max: 1.0, step: 0.05, unit: "×", desc: "Fraction of helicopter horizontal velocity inherited by dropped paratroopers." },
+      { key: "paraDescentSpeed", label: "Paratroop Descent Speed", min: 25, max: 150, step: 5, unit: "px/s", desc: "Vertical parachute descent rate of dropped paratroopers." }
+    ]
+  }
+];
 
 export const P47_TUNING_SCHEMA = [
   {
