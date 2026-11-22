@@ -723,7 +723,6 @@ export function updateP47Config(patch = {}) {
   }
   if (patch.reset) {
     Object.assign(AIRCRAFT_CONFIG.p47, DEFAULT_P47_CONFIG);
-    return { ...AIRCRAFT_CONFIG.p47 };
   }
   for (const [key, rawVal] of Object.entries(patch)) {
     if (!(key in DEFAULT_P47_CONFIG)) continue;
@@ -733,6 +732,11 @@ export function updateP47Config(patch = {}) {
         AIRCRAFT_CONFIG.p47[key] = num;
       }
     }
+  }
+  if ("bombDamage" in patch && !("secondaryDamage" in patch)) {
+    AIRCRAFT_CONFIG.p47.secondaryDamage = AIRCRAFT_CONFIG.p47.bombDamage;
+  } else if ("secondaryDamage" in patch && !("bombDamage" in patch)) {
+    AIRCRAFT_CONFIG.p47.bombDamage = AIRCRAFT_CONFIG.p47.secondaryDamage;
   }
   return { ...AIRCRAFT_CONFIG.p47 };
 }
@@ -918,6 +922,34 @@ export function spawnPlayerP47Test(state, playerId, mode = "air") {
     player.vx = dir * player.speed;
     player.vy = 0;
     player.landedAtBase = false;
+  } else if (mode === "weapons") {
+    player.x = dir * -1200;
+    player.y = 280;
+    player.speed = cfg.cruiseSpeed;
+    player.vx = dir * player.speed;
+    player.vy = 0;
+    player.landedAtBase = false;
+    const enemyTeam = player.team === "allied" ? "enemy" : "allied";
+    const targets = [
+      ["infantry", player.x + dir * 560],
+      ["aa_truck", player.x + dir * 740],
+      ["mbt", player.x + dir * 920],
+      ["howitzer", player.x + dir * 1420]
+    ];
+    for (const [kind, tx] of targets) {
+      const u = spawnGroundUnit(state, enemyTeam, kind, tx);
+      if (u) {
+        u.holdPosition = true;
+        u.passiveDummy = true;
+      }
+    }
+    const centerBunker = state.bunkers.find((b) => b.id === "bunker_2") || state.bunkers[2];
+    if (centerBunker) {
+      centerBunker.owner = enemyTeam;
+      centerBunker.hp = DEFENSE_CONFIG.bunker.maxHp;
+      centerBunker.maxHp = DEFENSE_CONFIG.bunker.maxHp;
+      centerBunker.passiveDummy = true;
+    }
   } else if (mode === "bounce") {
     player.x = player.team === "allied" ? -400 : 400;
     player.y = 18;

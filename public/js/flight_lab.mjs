@@ -101,6 +101,8 @@ const elPitch = document.getElementById("tel-pitch");
 const elEffPitch = document.getElementById("tel-eff-pitch");
 const elVxVy = document.getElementById("tel-vxvy");
 const elAlt = document.getElementById("tel-alt");
+const elBurst = document.getElementById("tel-burst");
+const elBombs = document.getElementById("tel-bombs");
 
 // Chopper Telemetry elements
 const elHeliVxReadout = document.getElementById("heli-vx-readout");
@@ -213,8 +215,8 @@ function startScenario(mode, snapCamera = true) {
     elAutoThrottle.checked = mode === "weapons";
     spawnPlayerHeliTest(state, PLAYER_ID, mode);
   } else {
-    // Only "cruise" locks Auto-Throttle ON for hands-free Stage 1 wave tuning; other modes let user see off-throttle behavior immediately
-    elAutoThrottle.checked = mode === "cruise";
+    // Only "cruise" and "weapons" lock Auto-Throttle ON for hands-free Stage 1 flight; other modes let user see off-throttle behavior immediately
+    elAutoThrottle.checked = mode === "cruise" || mode === "weapons";
     const simMode = mode === "cruise" ? "air" : mode;
     spawnPlayerP47Test(state, PLAYER_ID, simMode);
   }
@@ -309,7 +311,17 @@ function adaptLiveP47ToParam(key, val) {
   if (!p || !p.alive || p.crashing) return;
   const cfg = AIRCRAFT_CONFIG.p47;
 
-  if (key === "cruiseSpeed" && (elAutoThrottle.checked || activeScenario === "cruise" || activeScenario === "brake")) {
+  if (key === "maxHp") {
+    const ratio = p.maxHp > 0 ? p.hp / p.maxHp : 1;
+    p.maxHp = val;
+    p.hp = Math.max(1, Math.round(val * ratio));
+  } else if (key === "maxSecondary") {
+    const wasFull = p.secondaryAmmo >= p.maxSecondary;
+    p.maxSecondary = val;
+    p.secondaryAmmo = wasFull ? val : Math.min(val, p.secondaryAmmo);
+  } else if (key === "turnDuration") {
+    p.turnDuration = Math.max(0.05, val);
+  } else if (key === "cruiseSpeed" && (elAutoThrottle.checked || activeScenario === "cruise" || activeScenario === "brake" || activeScenario === "weapons")) {
     p.speed = clamp(val, 0, cfg.maxSpeed);
   } else if (key === "maxSpeed" && p.speed > val) {
     p.speed = val;
@@ -1175,6 +1187,14 @@ function updateTelemetry(player) {
   elEffPitch.textContent = `${effPitchDeg >= 0 ? "+" : ""}${effPitchDeg.toFixed(1)}°`;
   elVxVy.textContent = `${Math.round(player.vx)} / ${Math.round(player.vy)}`;
   elAlt.textContent = `${Math.round(player.y)}m • ${Math.ceil(player.hp)}/${player.maxHp}`;
+  if (elBurst) {
+    const burst = player.burstReservoir ?? BURST_MAX_TICKS;
+    elBurst.textContent = `${burst}/${BURST_MAX_TICKS}`;
+    elBurst.style.color = burst > 0 ? "#22c55e" : "#f59e0b";
+  }
+  if (elBombs) {
+    elBombs.textContent = `${player.secondaryAmmo} / ${player.maxSecondary}`;
+  }
 }
 
 function handleAutoLoop(player, dt) {
@@ -1195,6 +1215,15 @@ function handleAutoLoop(player, dt) {
   }
 
   if (activeScenario === "cruise" || activeScenario === "runway") return;
+  if (activeScenario === "weapons") {
+    if (!player.alive) {
+      loopCooldown += dt;
+      if (loopCooldown >= 0.75) {
+        startScenario(activeScenario, true);
+      }
+    }
+    return;
+  }
   const groundedStop = player.y <= 0.1 && player.speed < 5 && !player.crashing;
   const settledStall = activeScenario === "stall" && (!player.alive || groundedStop);
   const settledBrake = activeScenario === "brake" && (!player.alive || groundedStop);

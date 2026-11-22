@@ -29,6 +29,7 @@ import {
   HELI_MISSILE_UNBOOSTED_DAMAGE_MULT,
   HELI_TUNING_SCHEMA,
   MISSILE_FUEL_DISTANCE,
+  P47_TUNING_SCHEMA,
   SLOW_FIRE_INTERVAL,
   SPECIAL_WEAPON_CIV_GOAL_BASE,
   SPECIAL_WEAPON_CIV_GOAL_MULTI_HELI,
@@ -3803,4 +3804,82 @@ test("Shorter primary burst kills a plane only on 100% rapid-unload hits; missin
   const survivingHeli = runBurstUnload("p47", "heli", BURST_MAX_TICKS);
   assert.equal(survivingHeli.alive, true, "Tankier Helicopter survives a single full rapid-fire burst");
   assert.equal(survivingHeli.hp, 92);
+});
+
+test("P-47 Flight Lab weapons & hull tuning (updateP47Config), schema completeness, and weapons scenario work cleanly", () => {
+  try {
+    // 1. Verify every P47_TUNING_SCHEMA key exists as a finite number in DEFAULT_P47_CONFIG
+    const keys = [];
+    for (const group of P47_TUNING_SCHEMA) {
+      for (const item of group.items) {
+        keys.push(item.key);
+        assert.equal(typeof DEFAULT_P47_CONFIG[item.key], "number", `DEFAULT_P47_CONFIG.${item.key} is numeric`);
+        assert.ok(Number.isFinite(DEFAULT_P47_CONFIG[item.key]), `DEFAULT_P47_CONFIG.${item.key} is finite`);
+      }
+    }
+    for (const reqKey of ["maxHp", "primarySpeed", "primaryRange", "primaryDamage", "maxSecondary", "secondaryCooldownTicks", "bombDamage", "bombAirDamage"]) {
+      assert.ok(keys.includes(reqKey), `P47_TUNING_SCHEMA includes ${reqKey}`);
+    }
+
+    // 2. Patch P-47 weapons & hull stats, verify bombDamage <-> secondaryDamage sync and reset+patch
+    const updated = updateP47Config({
+      reset: true,
+      maxHp: 320,
+      primarySpeed: 1800,
+      primaryRange: 2200,
+      primaryDamage: 28,
+      maxSecondary: 16,
+      secondaryCooldownTicks: 10,
+      bombDamage: 220,
+      bombAirDamage: 165
+    });
+    assert.equal(updated.maxHp, 320);
+    assert.equal(updated.primarySpeed, 1800);
+    assert.equal(updated.primaryRange, 2200);
+    assert.equal(updated.primaryDamage, 28);
+    assert.equal(updated.maxSecondary, 16);
+    assert.equal(updated.secondaryCooldownTicks, 10);
+    assert.equal(updated.bombDamage, 220);
+    assert.equal(updated.secondaryDamage, 220, "secondaryDamage syncs with bombDamage");
+    assert.equal(updated.bombAirDamage, 165);
+
+    const syncedBack = updateP47Config({ secondaryDamage: 190 });
+    assert.equal(syncedBack.bombDamage, 190, "bombDamage syncs with secondaryDamage");
+
+    // 3. Verify tuned stats take effect in weapons scenario & fired projectiles
+    const state = createInitialState({ includePracticeTargets: false, includeCivilians: false });
+    const p1 = addPlayer(state, "p1", "allied", "p47");
+    assert.equal(spawnPlayerP47Test(state, "p1", "weapons"), true);
+    assert.equal(p1.maxHp, 320);
+    assert.equal(p1.hp, 320);
+    assert.equal(p1.maxSecondary, 16);
+    assert.equal(p1.secondaryAmmo, 16);
+    assert.ok(state.units.length >= 4 && state.units.every((u) => u.passiveDummy), "weapons scenario spawns passive dummy targets");
+    const centerBunker = state.bunkers.find((b) => b.id === "bunker_2") || state.bunkers[2];
+    assert.equal(centerBunker.owner, "enemy");
+    assert.equal(centerBunker.passiveDummy, true);
+    const howitzer = state.units.find((u) => u.kind === "self_propelled_howitzer");
+    assert.ok(howitzer, "weapons scenario spawns a howitzer");
+    assert.ok(
+      Math.abs(howitzer.x - centerBunker.x) > 62 + 64,
+      "howitzer hurtbox does not overlap with center enemy bunker hurtbox"
+    );
+
+    stepSimulation(state, { p1: { firePrimary: true, fireSecondary: true } });
+    const bullet = state.projectiles.find((pr) => pr.kind === "bullet");
+    const bomb = state.projectiles.find((pr) => pr.kind === "p47_bomb");
+    assert.ok(bullet, "P-47 fires primary cannon round");
+    assert.equal(bullet.damage, 28);
+    assert.equal(bullet.maxRange, 2200);
+    assert.ok(bomb, "P-47 drops secondary bomb");
+    assert.equal(bomb.damage, 190);
+    assert.equal(bomb.airDamage, 165);
+    assert.equal(p1.secondaryAmmo, 15);
+    assert.equal(p1.secondaryCooldown, 10);
+  } finally {
+    const resetCfg = updateP47Config({ reset: true });
+    assert.equal(resetCfg.maxHp, DEFAULT_P47_CONFIG.maxHp);
+    assert.equal(resetCfg.bombDamage, DEFAULT_P47_CONFIG.bombDamage);
+    assert.equal(resetCfg.secondaryDamage, DEFAULT_P47_CONFIG.secondaryDamage);
+  }
 });
