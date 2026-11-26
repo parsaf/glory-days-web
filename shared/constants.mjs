@@ -94,18 +94,18 @@ export const AIRCRAFT_CONFIG = {
     cruiseSpeed: 510,
     maxSpeed: 720,
     accelRate: 360,
-    throttleReleaseDelay: 1.10, // Stage 2 grace period lift duration (s)
+    throttleReleaseDelay: 1.1, // Stage 2 grace period lift duration (s)
     dragDecelRate: 220,
     brakeTapStep: 55,           // Speed shaved on each opposite-key tap (px/s)
     brakeDecelRate: 620,        // Continuous braking when holding opposite key (px/s^2)
     turnHoldThreshold: 0.14,    // Opposite-key hold at min speed before U-turn (s)
     stallSpeed: 250,
     minGlideSpeed: 260,         // Minimum flight speed & turnaround speed floor
-    stallGlideDelay: 1.40,      // Stage 3 slow-descent duration before Stage 4 (s)
+    stallGlideDelay: 1.4,      // Stage 3 slow-descent duration before Stage 4 (s)
     glidePitch: -0.18,          // Stage 3 slight nose-down tilt (rad)
     maxDivePitch: -0.56,        // Stage 4 nose-down tilt matching -maxPitch (rad)
     stage3UpPitch: 0.12,        // Stage 3 Up-arrow counter-tilt slightly above level (rad)
-    stage4UpPitch: 0.0,         // Stage 4 Up-arrow counter-tilt at level (rad)
+    stage4UpPitch: 0,         // Stage 4 Up-arrow counter-tilt at level (rad)
     divePitchRate: 2.6,
     diveGravityAccel: 0,
     stallSinkGravity: 85,       // Stage 3 slow descent rate (px/s)
@@ -124,16 +124,16 @@ export const AIRCRAFT_CONFIG = {
     maxSecondary: 12,
     secondaryCooldownTicks: 18,
     cabinCapacity: 0,
-    turnDuration: 0.70,
+    turnDuration: 0.7,
     sineOmega: 1.15,        // long horizontal wavelength
     sineAmpVel: 18,         // gentle vertical velocity wave
     sinePitchAmp: 0.032,    // subtle matching nose pitch
     primarySpeed: 1300,
     primaryRange: 1600,
-    primaryDamage: 13,
-    bombDamage: 145,
+    primaryDamage: 22,
+    bombDamage: 220,
     bombAirDamage: 100,
-    secondaryDamage: 145,
+    secondaryDamage: 220,
     hitRadius: 30
   }
 };
@@ -364,6 +364,19 @@ export const P47_TUNING_SCHEMA = [
       { key: "crashSlideTicks", label: "Crash Slide Duration", min: 10, max: 180, step: 2, unit: "ticks", desc: "Max 60 Hz ticks the fatal wreck drags along the ground." },
       { key: "crashSlideDecel", label: "Crash Slide Friction", min: 40, max: 500, step: 10, unit: "px/s²", desc: "How fast the burning wreck slows while bulldozing units." }
     ]
+  },
+  {
+    group: "Weapons & Hull",
+    items: [
+      { key: "maxHp", label: "Hull Max HP", min: 100, max: 800, step: 10, unit: "HP", desc: "Maximum P-47 airframe armor hit points." },
+      { key: "primarySpeed", label: "Wing Cannon Muzzle Speed", min: 500, max: 2200, step: 25, unit: "px/s", desc: "Velocity of primary wing cannon rounds." },
+      { key: "primaryRange", label: "Wing Cannon Range", min: 400, max: 3000, step: 50, unit: "m", desc: "Maximum travel distance of primary wing cannon bullets." },
+      { key: "primaryDamage", label: "Wing Cannon Damage", min: 4, max: 50, step: 1, unit: "dmg", desc: "Damage inflicted per primary wing cannon round." },
+      { key: "maxSecondary", label: "Bomb Rack Capacity", min: 1, max: 24, step: 1, unit: "bombs", desc: "Maximum dumb bombs carried before needing base reload." },
+      { key: "secondaryCooldownTicks", label: "Bomb Release Cooldown", min: 5, max: 60, step: 1, unit: "ticks", desc: "60 Hz ticks between consecutive bomb drops." },
+      { key: "bombDamage", label: "Bomb Ground Damage", min: 40, max: 350, step: 5, unit: "dmg", desc: "Impact damage dealt by each P-47 bomb against ground targets and bunkers." },
+      { key: "bombAirDamage", label: "Bomb Air Damage", min: 40, max: 350, step: 5, unit: "dmg", desc: "Direct-hit damage dealt by a P-47 bomb against enemy aircraft." }
+    ]
   }
 ];
 
@@ -426,7 +439,7 @@ export const GROUND_DAMAGE_MAX_COOLDOWN_MULT = 2.0;
 export const GROUND_BEHAVIOR_CONFIG = {
   damageDegradationEnabled: true,
   minDamagedSpeedFactor: 0.45,
-  maxDamagedCooldownMult: 2.0,
+  maxDamagedCooldownMult: 2,
   damagedAaSlowOnly: true,
   supplyReloadBoost: true,
   ambulanceTargetable: false,
@@ -475,8 +488,8 @@ export const UNIT_CONFIG = {
     speed: 78,
     visualRange: 750,
     samRange: 750,
-    samDamage: 100,
-    samCooldownTicks: 78,
+    samDamage: 55,
+    samCooldownTicks: 150,
     samMaxFlightTime: 2.6,
     samSpeeds: { slow: 360, medium: 600, fast: 960 },
     groundRange: 210,
